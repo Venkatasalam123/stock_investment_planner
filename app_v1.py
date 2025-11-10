@@ -350,7 +350,7 @@ st.sidebar.header("⚙️ Screener Settings")
 
 horizon = st.sidebar.select_slider("Investment Horizon", options=["3Y", "5Y", "7Y", "10Y+"], value="10Y+")
 review_date = st.sidebar.date_input("Review Date", value=date.today())
-max_stocks_to_check = st.sidebar.select_slider("Max Stocks to Check", 10, 500, 10, step=5)
+max_stocks_to_check = st.sidebar.slider("Max Stocks to Check", 10, 500, 10, step=5)
 
 st.sidebar.markdown("---")
 INV_AMT = st.sidebar.number_input("Investable Amount (₹)", value=100000.0, step=10000.0, min_value=0.0, help="Amount to allocate across LLM picks")
