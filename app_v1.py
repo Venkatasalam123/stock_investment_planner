@@ -374,20 +374,20 @@ weights = {k: st.sidebar.slider(k, 0, 30, v) for k, v in weight_defaults.items()
 
 
 # ---------- Main title ----------
-st.title("🤖 Nifty 500 Screener – Sentiment + LLM Allocation (Step 7)")
-st.caption("Automatically evaluates Nifty 500, then asks an LLM to propose picks and allocation.")
+st.title(f"🤖 Nifty {max_stocks_to_check} Screener – Sentiment + LLM Allocation (Step 7)")
+st.caption(f"Automatically evaluates Nifty {max_stocks_to_check}, then asks an LLM to propose picks and allocation.")
 
 # ---------- Fetch universe ----------
 nifty_df = fetch_nifty500_symbols()
 nifty_df = nifty_df.head(max_stocks_to_check)
 if nifty_df.empty:
-    st.error("⚠️ Could not fetch Nifty 500 list from NSE. Please retry later.")
+    st.error(f"⚠️ Could not fetch Nifty {max_stocks_to_check} list from NSE. Please retry later.")
     st.stop()
 
 # ---------- Screener execution ----------
 st.header("🔍 Run Screener")
 
-if st.button("Run Screener for All Nifty 500 Stocks"):
+if st.button(f"Run Screener for All Nifty {max_stocks_to_check} Stocks"):
     progress = st.progress(0)
     results = []
     n = len(nifty_df)
