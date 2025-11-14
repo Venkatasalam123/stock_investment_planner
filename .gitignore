@@ -1,0 +1,9 @@
+# Ignore environment variables
+.env
+
+# Ignore storage folder
+data/
+
+# Optional: ignore Python cache files
+__pycache__/
+*.pyc
