@@ -16,7 +16,12 @@ import streamlit as st
 from dotenv import load_dotenv
 import yfinance as yf
 
-# Import helper functions from original app
+# Import app module and force reload to avoid caching issues
+import app
+import importlib
+importlib.reload(app)
+
+# Import helper functions from original app (after reload)
 from app import (
     load_symbol_catalog,
     enrich_purchase_lots,
