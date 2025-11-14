@@ -56,6 +56,12 @@ def _format_snapshots_for_prompt(snapshots: Iterable[StockSnapshot]) -> str:
     lines: List[str] = []
     for snapshot in snapshots:
         fundamentals = snapshot.fundamentals or {}
+        # Get current price from price_history if available
+        history = getattr(snapshot, "price_history", None)
+        close = None
+        if history is not None and not history.empty and "Close" in history.columns:
+            close = history["Close"].iloc[-1] if len(history) > 0 else None
+        
         line_parts = [f"{snapshot.symbol} ({snapshot.short_name or 'N/A'}):"]
         
         # Price changes
@@ -86,11 +92,14 @@ def _format_snapshots_for_prompt(snapshots: Iterable[StockSnapshot]) -> str:
             tech_parts.append(f"Vol Ratio={snapshot.volume_ratio:.2f}x ({vol_status})")
         if snapshot.dist_52w_high is not None:
             tech_parts.append(f"52W High Dist={snapshot.dist_52w_high:.2%}")
+        if snapshot.beta is not None:
+            beta_status = "High Vol" if snapshot.beta > 1.2 else "Low Vol" if snapshot.beta < 0.8 else "Market Vol"
+            tech_parts.append(f"Beta={snapshot.beta:.2f} ({beta_status})")
         
         if tech_parts:
             line_parts.append(" | Tech: " + ", ".join(tech_parts))
         
-        # Fundamentals
+        # Fundamentals - Valuation
         fund_parts = []
         if fundamentals.get("totalRevenue"):
             fund_parts.append(f"Revenue={fundamentals.get('totalRevenue'):,}")
@@ -98,15 +107,148 @@ def _format_snapshots_for_prompt(snapshots: Iterable[StockSnapshot]) -> str:
             fund_parts.append(f"EPS={fundamentals.get('trailingEps'):.2f}")
         if fundamentals.get("trailingPE") is not None:
             fund_parts.append(f"P/E={fundamentals.get('trailingPE'):.2f}")
+        if snapshot.peg_ratio is not None:
+            fund_parts.append(f"PEG={snapshot.peg_ratio:.2f}")
+        if snapshot.price_to_book is not None:
+            fund_parts.append(f"P/B={snapshot.price_to_book:.2f}")
+        if snapshot.price_to_sales is not None:
+            fund_parts.append(f"P/S={snapshot.price_to_sales:.2f}")
+        if snapshot.ev_to_ebitda is not None:
+            fund_parts.append(f"EV/EBITDA={snapshot.ev_to_ebitda:.2f}")
+        
+        # Profitability
         if fundamentals.get("returnOnEquity") is not None:
             fund_parts.append(f"ROE={fundamentals.get('returnOnEquity'):.2%}")
+        if snapshot.roic is not None:
+            fund_parts.append(f"ROIC={snapshot.roic:.2%}")
+        if snapshot.roa is not None:
+            fund_parts.append(f"ROA={snapshot.roa:.2%}")
+        if snapshot.gross_margin is not None:
+            fund_parts.append(f"Gross Margin={snapshot.gross_margin:.2%}")
+        if snapshot.net_margin is not None:
+            fund_parts.append(f"Net Margin={snapshot.net_margin:.2%}")
+        if snapshot.ebitda_margin is not None:
+            fund_parts.append(f"EBITDA Margin={snapshot.ebitda_margin:.2%}")
+        
+        # Growth
         if snapshot.revenue_growth_yoy is not None:
-            fund_parts.append(f"Rev Growth YoY={snapshot.revenue_growth_yoy:.2%}")
+            fund_parts.append(f"Rev Growth={snapshot.revenue_growth_yoy:.2%}")
+        if snapshot.profit_growth_yoy is not None:
+            fund_parts.append(f"Profit Growth={snapshot.profit_growth_yoy:.2%}")
         if snapshot.dividend_yield is not None:
             fund_parts.append(f"Div Yield={snapshot.dividend_yield:.2%}")
         
+        # Efficiency & Liquidity
+        if snapshot.asset_turnover is not None:
+            fund_parts.append(f"Asset Turnover={snapshot.asset_turnover:.2f}")
+        if snapshot.inventory_turnover is not None:
+            fund_parts.append(f"Inv Turnover={snapshot.inventory_turnover:.2f}")
+        if snapshot.current_ratio is not None:
+            fund_parts.append(f"Current Ratio={snapshot.current_ratio:.2f}")
+        if snapshot.quick_ratio is not None:
+            fund_parts.append(f"Quick Ratio={snapshot.quick_ratio:.2f}")
+        
+        # Debt & Financial Health
+        if snapshot.interest_coverage is not None:
+            fund_parts.append(f"Interest Coverage={snapshot.interest_coverage:.2f}x")
+        if snapshot.debt_to_assets is not None:
+            fund_parts.append(f"Debt/Assets={snapshot.debt_to_assets:.2%}")
+        if snapshot.working_capital is not None:
+            if snapshot.working_capital >= 1e9:
+                wc_str = f"₹{snapshot.working_capital/1e9:.2f}B"
+            elif snapshot.working_capital >= 1e6:
+                wc_str = f"₹{snapshot.working_capital/1e6:.2f}M"
+            else:
+                wc_str = f"₹{snapshot.working_capital:.0f}"
+            fund_parts.append(f"Working Capital={wc_str}")
+        
+        # Cash Flow
+        if snapshot.operating_cash_flow is not None:
+            if abs(snapshot.operating_cash_flow) >= 1e9:
+                ocf_str = f"₹{snapshot.operating_cash_flow/1e9:.2f}B"
+            elif abs(snapshot.operating_cash_flow) >= 1e6:
+                ocf_str = f"₹{snapshot.operating_cash_flow/1e6:.2f}M"
+            else:
+                ocf_str = f"₹{snapshot.operating_cash_flow:.0f}"
+            fund_parts.append(f"Op CF={ocf_str}")
+        if snapshot.capex is not None:
+            if snapshot.capex >= 1e9:
+                capex_str = f"₹{snapshot.capex/1e9:.2f}B"
+            elif snapshot.capex >= 1e6:
+                capex_str = f"₹{snapshot.capex/1e6:.2f}M"
+            else:
+                capex_str = f"₹{snapshot.capex:.0f}"
+            fund_parts.append(f"CapEx={capex_str}")
+        if snapshot.cash_flow_per_share is not None:
+            fund_parts.append(f"CF/Share=₹{snapshot.cash_flow_per_share:.2f}")
+        
         if fund_parts:
             line_parts.append(" | Fund: " + ", ".join(fund_parts))
+        
+        # Advanced Technical Indicators
+        advanced_tech = []
+        if snapshot.stochastic_k is not None and snapshot.stochastic_d is not None:
+            stoch_status = "Overbought" if snapshot.stochastic_k > 80 else "Oversold" if snapshot.stochastic_k < 20 else "Neutral"
+            advanced_tech.append(f"Stoch={snapshot.stochastic_k:.1f}/{snapshot.stochastic_d:.1f} ({stoch_status})")
+        if snapshot.williams_r is not None:
+            wr_status = "Oversold" if snapshot.williams_r < -80 else "Overbought" if snapshot.williams_r > -20 else "Neutral"
+            advanced_tech.append(f"Williams%R={snapshot.williams_r:.1f} ({wr_status})")
+        if snapshot.support_level is not None and snapshot.resistance_level is not None:
+            if close is not None:
+                advanced_tech.append(f"Support=₹{snapshot.support_level:.2f}, Resistance=₹{snapshot.resistance_level:.2f}")
+        
+        if advanced_tech:
+            line_parts.append(" | Adv Tech: " + ", ".join(advanced_tech))
+        
+        # Risk Metrics
+        risk_parts = []
+        if snapshot.sharpe_ratio is not None:
+            risk_parts.append(f"Sharpe={snapshot.sharpe_ratio:.2f}")
+        if snapshot.sortino_ratio is not None:
+            risk_parts.append(f"Sortino={snapshot.sortino_ratio:.2f}")
+        if snapshot.max_drawdown is not None:
+            risk_parts.append(f"Max DD={snapshot.max_drawdown:.2%}")
+        if snapshot.volatility is not None:
+            risk_parts.append(f"Volatility={snapshot.volatility:.2%}")
+        
+        if risk_parts:
+            line_parts.append(" | Risk: " + ", ".join(risk_parts))
+        
+        # Market Cap & Ownership
+        market_info = []
+        if snapshot.market_cap is not None:
+            if snapshot.market_cap >= 1e12:
+                cap_str = f"₹{snapshot.market_cap/1e12:.2f}T"
+            elif snapshot.market_cap >= 1e9:
+                cap_str = f"₹{snapshot.market_cap/1e9:.2f}B"
+            elif snapshot.market_cap >= 1e6:
+                cap_str = f"₹{snapshot.market_cap/1e6:.2f}M"
+            else:
+                cap_str = f"₹{snapshot.market_cap:.0f}"
+            market_info.append(f"Mkt Cap={cap_str}")
+        if snapshot.institutional_ownership is not None:
+            market_info.append(f"Inst Own={snapshot.institutional_ownership:.1%}")
+        if snapshot.float_shares is not None:
+            if snapshot.float_shares >= 1e9:
+                float_str = f"{snapshot.float_shares/1e9:.2f}B"
+            elif snapshot.float_shares >= 1e6:
+                float_str = f"{snapshot.float_shares/1e6:.2f}M"
+            else:
+                float_str = f"{snapshot.float_shares:.0f}"
+            market_info.append(f"Float={float_str} shares")
+        
+        if market_info:
+            line_parts.append(" | Market: " + ", ".join(market_info))
+        
+        # Timing Factors
+        timing_info = []
+        if snapshot.earnings_date:
+            timing_info.append(f"Earnings={snapshot.earnings_date}")
+        if snapshot.ex_dividend_date:
+            timing_info.append(f"Ex-Div={snapshot.ex_dividend_date}")
+        
+        if timing_info:
+            line_parts.append(" | Timing: " + ", ".join(timing_info))
         
         lines.append(" - " + " ".join(line_parts))
     return "\n".join(lines[:100])  # cap to avoid overly long prompts
@@ -218,17 +360,32 @@ CRITICAL RULES:
 1. DO NOT recommend stocks with BEARISH 6M Forecast (negative forecast_slope) unless there are exceptional fundamental reasons AND the investor has a very long horizon (5+ years).
 2. Prioritize stocks with positive forecast trends, strong technical indicators (RSI not overbought, bullish MACD, Golden Cross), and solid fundamentals.
 3. If a stock shows BEARISH forecast but strong fundamentals, mention this contradiction clearly in risks and consider lower allocation or waiting.
-4. MARKET MOOD STRATEGY:
+4. MARKET MOOD STRATEGY (CRITICAL):
    - If market mood is "Fear" or "Extreme Fear" (index < 45): This is a BUYING OPPORTUNITY. Consider increasing allocation to quality stocks as fear often creates value. Be more aggressive in recommendations.
-   - If market mood is "Greed" or "Extreme Greed" (index > 55): Be CAUTIOUS. Market may be overvalued. Reduce allocation percentages, focus on defensive stocks, or recommend waiting for better entry points.
+   - If market mood is "Greed" or "Extreme Greed" (index > 55): MARKET IS OVERVALUED. You MUST prioritize recommending to WAIT rather than buy. Only recommend stocks if there are exceptional value opportunities with very strong fundamentals (e.g., low P/E, high dividend yield, strong revenue growth) AND if the investor has a long horizon (5+ years). In most cases with "Greed" or "Extreme Greed", return an EMPTY allocations list and explain in guidance why waiting is the better option.
    - If market mood is "Neutral" (45-55): Proceed with standard analysis.
+   - REMEMBER: If you say the market is in a state of greed/overvaluation, your guidance MUST recommend waiting or be very conservative. DO NOT contradict yourself by recommending multiple stocks while warning about overvaluation.
 5. If the investor ALREADY OWNS the evaluation stock and its forecast is bearish, default to a **SELL / book profits** stance unless there is overwhelming long-term conviction.
 6. Only recommend SELL when the realised gain is meaningful for a long-term investor (at least 5% in percentage terms and roughly ₹5,000 absolute). Otherwise recommend holding/accumulating or waiting.
+
+DETAILED ANALYSIS REQUIRED:
+- When recommending to WAIT, you MUST provide a detailed explanation that goes beyond just the market mood index.
+- Include specific metrics that influenced your decision, such as:
+  * Average/median P/E ratios across stocks (if >25, mention overvaluation)
+  * RSI levels (if many stocks are overbought >70, mention technical overvaluation)
+  * Distance from 52W highs (if stocks are near 52W highs, mention elevated valuations)
+  * Forecast trends (if many stocks show bearish forecasts, mention this)
+  * Beta/volatility levels (if high, mention market risk)
+  * PEG ratios (if >1.5, mention growth not justifying valuation)
+  * Debt levels (if high debt/equity ratios, mention financial stress)
+  * Revenue/profit growth trends (if declining, mention fundamental weakness)
+- Be specific: Instead of "market is overvalued", say "average P/E of 28 across analyzed stocks indicates overvaluation, with 60% of stocks trading within 5% of 52-week highs and RSI levels averaging 68, suggesting limited upside potential."
+- Reference actual numbers from the data provided, not generic statements.
 
 Analyse the data, decide whether to invest now, wait, or partially allocate. Return a JSON object with:
 {{
   "summary": "<short summary>",
-  "guidance": "<overall guidance or wait conditions>",
+  "guidance": "<overall guidance with DETAILED metric analysis. If recommending wait, explain which specific metrics (P/E, RSI, 52W high distance, forecast trends, beta, etc.) influenced this decision. Include actual numbers from the data.>",
   "allocations": [
      {{
         "symbol": "<ticker>",
@@ -239,7 +396,7 @@ Analyse the data, decide whether to invest now, wait, or partially allocate. Ret
   ]
 }}
 
-If recommending to wait entirely, set allocations to an empty list and explain why in guidance.
+If recommending to wait entirely, set allocations to an empty list and explain why in guidance with SPECIFIC METRIC REFERENCES.
 Ensure allocation percentages sum to <= 100. Use concise language.
 If no specific stock evaluation is requested, set "stock_evaluation": null.
 """

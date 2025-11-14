@@ -333,27 +333,7 @@ def run_agentic_pipeline(inputs: Dict[str, Any]) -> None:
 def main() -> None:
     """Main entry point for the agentic app."""
     inputs = sidebar_inputs()
-    render_intro()
-    
-    st.caption(
-        f"🤖 Agentic Mode | "
-        f"OpenAI key: {'✅' if os.getenv('OPENAI_API_KEY') else '❌'} | "
-        f"News API key: {'✅' if os.getenv('NEWS_API_KEY') else '❌'}"
-    )
-    
-    # Add info about agentic mode
-    with st.expander("ℹ️ About Agentic Mode", expanded=False):
-        st.markdown("""
-        This version uses an **agentic AI architecture** where specialized agents handle different aspects:
-        
-        - 🤖 **Data Collection Agent**: Fetches market data, stock prices, fundamentals, and FII trends
-        - 📰 **News Collection Agent**: Gathers recent news headlines for stocks
-        - 📊 **Market Mood Agent**: Calculates market sentiment (fear/greed index)
-        - 🔍 **Analysis Agent**: Performs technical/fundamental analysis and filters candidates
-        - 💡 **Recommendation Agent**: Uses LLM to generate investment recommendations
-        
-        All agents are orchestrated by a **Coordinator Agent** that manages the workflow.
-        """)
+    render_intro(is_agentic=True)
     
     # Main sections
     tab1, tab2, tab3 = st.tabs([
@@ -363,9 +343,9 @@ def main() -> None:
     ])
     
     with tab1:
-        st.markdown("### 🔍 Investment Analysis (Agentic)")
-        st.markdown("Run a new analysis using agentic AI to get investment suggestions based on market data, news, and AI recommendations.")
-        if st.button("🤖 Run Agentic Analysis", type="primary", use_container_width=True):
+        st.markdown("### 🔍 Investment Analysis")
+        st.markdown("Run a new analysis to get investment suggestions based on market data, news, and AI recommendations.")
+        if st.button("Run Investment Analysis", type="primary", use_container_width=True):
             run_agentic_pipeline(inputs)
     
     with tab2:

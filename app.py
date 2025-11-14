@@ -30,6 +30,7 @@ from storage.database import (
     fetch_all_predictions,
     fetch_predictions_by_run_id,
     update_prediction_price,
+    delete_unknown_runs,
     update_prediction_action,
     PredictionTracking,
 )
@@ -393,106 +394,295 @@ def sidebar_inputs() -> Dict[str, Any]:
     }
 
 
-def render_intro() -> None:
-    st.title("📊 Stock Investment AI Companion")
-    st.markdown(
+def render_intro(is_agentic: bool = False) -> None:
+    # Help button with tooltip (shortened for mobile)
+    if is_agentic:
+        help_text = """
+        **Agentic AI Investment Assistant**
+        
+        📊 **Market Basket** - Analyze stocks from indices
+        🎯 **Single Stock Focus** - Deep-dive with profit calculations
+        📰 **News & Sentiment** - Real-time headlines & market mood
+        💡 **AI Recommendations** - Buy/sell guidance with forecasts
+        
+        **5 Specialized Agents** work together:
+        Data Collection → News → Market Mood → Analysis → Recommendations
+        
+        **Usage:** Configure sidebar → Choose mode → Run Analysis
         """
-        <div style="padding:1rem;border-radius:0.75rem;background:linear-gradient(135deg,#f0f4ff,#fef9ff);">
-            <p style="font-size:1.05rem;">Blend market data, technical signals, and AI guidance before you commit capital.</p>
-            <ul>
-                <li><strong>Market Basket</strong> – Screen dozens of constituents from a chosen index.</li>
-                <li><strong>Single Stock Focus</strong> – Deep-dive into one ticker, assess risks, and plan exits.</li>
-                <li><strong>News Radar</strong> – Headlines, momentum, and mood indicators fetched in parallel.</li>
-                <li><strong>Actionable Output</strong> – Allocation ideas, risk flags, and clear buy/sell guidance.</li>
-            </ul>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    else:
+        help_text = """
+        **Stock Investment AI Companion**
+        
+        📊 **Market Basket** - Screen stocks from major indices
+        🎯 **Single Stock Focus** - Analyze individual stocks
+        📰 **News & Sentiment** - Market headlines & mood indicators
+        💡 **AI Recommendations** - Buy/sell guidance with 6M forecasts
+        
+        **Usage:** Configure sidebar → Choose mode → Run Analysis
+        """
+    
+    # Mobile-friendly sidebar prompt - visible banner
+    st.info(
+        "📱 **Mobile users:** Tap the ☰ menu icon (top left) or swipe from the left edge "
+        "to open the sidebar and configure your settings.",
+        icon="⚙️"
     )
-    st.markdown(
-        """
-        **Tip:** Configure the sidebar, then click **Run Analysis**. Progress updates will let you know which step
-        (market data, news, LLM, logging) is underway.
-        """
-    )
+    
+    # Create columns for title and help button
+    col1, col2 = st.columns([0.95, 0.05])
+    with col1:
+        st.title("📊 Stock Investment AI Companion")
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        # Using tooltip via button help parameter
+        if st.button("❓", help=help_text, key="help_button_intro"):
+            pass  # Button click does nothing, tooltip shows on hover
 
 
 def show_snapshot_table(snapshots: List[StockSnapshot]) -> None:
-    df = pd.DataFrame(
-        [
+    """Display comprehensive snapshot table with all 40+ metrics organized by category."""
+    
+    # Create tabs for different metric categories
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Overview & Price", 
+        "💰 Valuation & Profitability", 
+        "💳 Debt & Cash Flow",
+        "📈 Technical & Risk",
+        "🏢 Ownership & Timing"
+    ])
+    
+    # Tab 1: Overview & Price Action
+    with tab1:
+        df_overview = pd.DataFrame([
             {
                 "Symbol": snapshot.symbol,
                 "Company": snapshot.short_name,
                 "1M Change": snapshot.change_1m,
                 "6M Change": snapshot.change_6m,
-                "Revenue": snapshot.fundamentals.get("totalRevenue"),
-                "EPS": snapshot.fundamentals.get("trailingEps"),
-                "P/E": snapshot.fundamentals.get("trailingPE"),
-                "ROE": snapshot.fundamentals.get("returnOnEquity"),
-                "Debt/Equity": snapshot.fundamentals.get("debtToEquity"),
-                "Revenue YoY": snapshot.revenue_growth_yoy,
-                "Revenue 3Y CAGR": snapshot.revenue_cagr_3y,
-                "Dividend Yield": snapshot.dividend_yield,
-                "Free Cash Flow": snapshot.free_cash_flow,
-                "Operating Margin": snapshot.operating_margin,
-                "Promoter Holding %": snapshot.promoter_holding_pct,
-                "Promoter Holding Δ": snapshot.promoter_holding_change,
-                "Forecast 6M": getattr(snapshot, "forecast_slope", None),
-                "RSI (14)": snapshot.rsi_14,
-                "50DMA": snapshot.moving_average_50,
-                "200DMA": snapshot.moving_average_200,
-                "MACD": snapshot.macd,
-                "MACD Signal": snapshot.macd_signal,
-                "Bollinger Upper": snapshot.bollinger_upper,
-                "Bollinger Middle": snapshot.bollinger_middle,
-                "Bollinger Lower": snapshot.bollinger_lower,
-                "Avg Vol (20d)": snapshot.avg_volume_20,
-                "Volume / Avg": snapshot.volume_ratio,
+                "Forecast 6M": snapshot.forecast_slope,
+                "Beta": snapshot.beta,
+                "Volatility": snapshot.volatility,
+                "Max Drawdown": snapshot.max_drawdown,
+                "Sharpe Ratio": snapshot.sharpe_ratio,
+                "Sortino Ratio": snapshot.sortino_ratio,
                 "Dist 52W High": snapshot.dist_52w_high,
                 "Dist 52W Low": snapshot.dist_52w_low,
+                "Support Level": snapshot.support_level,
+                "Resistance Level": snapshot.resistance_level,
             }
             for snapshot in snapshots
-        ]
-    )
-
-    # Table is displayed within expander if called from show_run_details
-    # Only show subheader if not in an expander context
-    st.dataframe(
-        df.style.format(
+        ])
+        
+        st.dataframe(
+            df_overview.style.format(
+                {
+                    "1M Change": "{:.2%}",
+                    "6M Change": "{:.2%}",
+                    "Forecast 6M": "{:.2%}",
+                    "Beta": "{:.2f}",
+                    "Volatility": "{:.2%}",
+                    "Max Drawdown": "{:.2%}",
+                    "Sharpe Ratio": "{:.2f}",
+                    "Sortino Ratio": "{:.2f}",
+                    "Dist 52W High": "{:.2%}",
+                    "Dist 52W Low": "{:.2%}",
+                    "Support Level": "{:,.2f}",
+                    "Resistance Level": "{:,.2f}",
+                },
+                na_rep="NA",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    
+    # Tab 2: Valuation & Profitability
+    with tab2:
+        df_valuation = pd.DataFrame([
             {
-                "1M Change": "{:.2%}",
-                "6M Change": "{:.2%}",
-                "Revenue": "{:,.0f}",
-                "EPS": "{:.2f}",
-                "P/E": "{:.2f}",
-                "ROE": "{:.2f}",
-                "Debt/Equity": "{:.2f}",
-                "Revenue YoY": "{:.2%}",
-                "Revenue 3Y CAGR": "{:.2%}",
-                "Dividend Yield": "{:.2%}",
-                "Free Cash Flow": "{:,.0f}",
-                "Operating Margin": "{:.2%}",
-                "Promoter Holding %": "{:.2%}",
-                "Promoter Holding Δ": "{:.2%}",
-                "Forecast 6M": "{:.2%}",
-                "RSI (14)": "{:.1f}",
-                "50DMA": "{:,.2f}",
-                "200DMA": "{:,.2f}",
-                "MACD": "{:.2f}",
-                "MACD Signal": "{:.2f}",
-                "Bollinger Upper": "{:,.2f}",
-                "Bollinger Middle": "{:,.2f}",
-                "Bollinger Lower": "{:,.2f}",
-                "Avg Vol (20d)": "{:,.0f}",
-                "Volume / Avg": "{:.2f}",
-                "Dist 52W High": "{:.2%}",
-                "Dist 52W Low": "{:.2%}",
-            },
-            na_rep="NA",
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+                "Symbol": snapshot.symbol,
+                "Company": snapshot.short_name,
+                "Market Cap (₹B)": snapshot.market_cap / 1e9 if snapshot.market_cap else None,
+                "Enterprise Value (₹B)": snapshot.enterprise_value / 1e9 if snapshot.enterprise_value else None,
+                "P/E": snapshot.fundamentals.get("trailingPE"),
+                "PEG": snapshot.peg_ratio,
+                "P/B": snapshot.price_to_book,
+                "P/S": snapshot.price_to_sales,
+                "EV/EBITDA": snapshot.ev_to_ebitda,
+                "EPS": snapshot.fundamentals.get("trailingEps"),
+                "Revenue (₹M)": snapshot.fundamentals.get("totalRevenue") / 1e6 if snapshot.fundamentals.get("totalRevenue") else None,
+                "ROE": snapshot.fundamentals.get("returnOnEquity"),
+                "ROIC": snapshot.roic,
+                "ROA": snapshot.roa,
+                "Gross Margin": snapshot.gross_margin,
+                "Net Margin": snapshot.net_margin,
+                "EBITDA Margin": snapshot.ebitda_margin,
+                "Operating Margin": snapshot.operating_margin,
+                "Revenue Growth YoY": snapshot.revenue_growth_yoy,
+                "Revenue CAGR 3Y": snapshot.revenue_cagr_3y,
+                "Profit Growth YoY": snapshot.profit_growth_yoy,
+            }
+            for snapshot in snapshots
+        ])
+        
+        st.dataframe(
+            df_valuation.style.format(
+                {
+                    "Market Cap (₹B)": "{:.2f}",
+                    "Enterprise Value (₹B)": "{:.2f}",
+                    "P/E": "{:.2f}",
+                    "PEG": "{:.2f}",
+                    "P/B": "{:.2f}",
+                    "P/S": "{:.2f}",
+                    "EV/EBITDA": "{:.2f}",
+                    "EPS": "{:.2f}",
+                    "Revenue (₹M)": "{:,.0f}",
+                    "ROE": "{:.2%}",
+                    "ROIC": "{:.2%}",
+                    "ROA": "{:.2%}",
+                    "Gross Margin": "{:.2%}",
+                    "Net Margin": "{:.2%}",
+                    "EBITDA Margin": "{:.2%}",
+                    "Operating Margin": "{:.2%}",
+                    "Revenue Growth YoY": "{:.2%}",
+                    "Revenue CAGR 3Y": "{:.2%}",
+                    "Profit Growth YoY": "{:.2%}",
+                },
+                na_rep="NA",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    
+    # Tab 3: Debt & Cash Flow
+    with tab3:
+        df_debt_cf = pd.DataFrame([
+            {
+                "Symbol": snapshot.symbol,
+                "Company": snapshot.short_name,
+                "Total Debt (₹M)": snapshot.total_debt / 1e6 if snapshot.total_debt else None,
+                "Debt/Equity": snapshot.fundamentals.get("debtToEquity"),
+                "Debt/Assets": snapshot.debt_to_assets,
+                "Interest Coverage": snapshot.interest_coverage,
+                "Working Capital (₹M)": snapshot.working_capital / 1e6 if snapshot.working_capital else None,
+                "Current Ratio": snapshot.current_ratio,
+                "Quick Ratio": snapshot.quick_ratio,
+                "Op Cash Flow (₹M)": snapshot.operating_cash_flow / 1e6 if snapshot.operating_cash_flow else None,
+                "Inv Cash Flow (₹M)": snapshot.investing_cash_flow / 1e6 if snapshot.investing_cash_flow else None,
+                "Fin Cash Flow (₹M)": snapshot.financing_cash_flow / 1e6 if snapshot.financing_cash_flow else None,
+                "CapEx (₹M)": snapshot.capex / 1e6 if snapshot.capex else None,
+                "Free Cash Flow (₹M)": snapshot.free_cash_flow / 1e6 if snapshot.free_cash_flow else None,
+                "Cash Flow/Share": snapshot.cash_flow_per_share,
+            }
+            for snapshot in snapshots
+        ])
+        
+        st.dataframe(
+            df_debt_cf.style.format(
+                {
+                    "Total Debt (₹M)": "{:,.0f}",
+                    "Debt/Equity": "{:.2f}",
+                    "Debt/Assets": "{:.2%}",
+                    "Interest Coverage": "{:.2f}x",
+                    "Working Capital (₹M)": "{:,.0f}",
+                    "Current Ratio": "{:.2f}",
+                    "Quick Ratio": "{:.2f}",
+                    "Op Cash Flow (₹M)": "{:,.0f}",
+                    "Inv Cash Flow (₹M)": "{:,.0f}",
+                    "Fin Cash Flow (₹M)": "{:,.0f}",
+                    "CapEx (₹M)": "{:,.0f}",
+                    "Free Cash Flow (₹M)": "{:,.0f}",
+                    "Cash Flow/Share": "{:.2f}",
+                },
+                na_rep="NA",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    
+    # Tab 4: Technical & Risk
+    with tab4:
+        df_technical = pd.DataFrame([
+            {
+                "Symbol": snapshot.symbol,
+                "Company": snapshot.short_name,
+                "RSI (14)": snapshot.rsi_14,
+                "Stochastic K": snapshot.stochastic_k,
+                "Stochastic D": snapshot.stochastic_d,
+                "Williams %R": snapshot.williams_r,
+                "MACD": snapshot.macd,
+                "MACD Signal": snapshot.macd_signal,
+                "50 DMA": snapshot.moving_average_50,
+                "200 DMA": snapshot.moving_average_200,
+                "BB Upper": snapshot.bollinger_upper,
+                "BB Middle": snapshot.bollinger_middle,
+                "BB Lower": snapshot.bollinger_lower,
+                "OBV": snapshot.obv,
+                "Avg Vol (20d)": snapshot.avg_volume_20,
+                "Volume Ratio": snapshot.volume_ratio,
+                "Asset Turnover": snapshot.asset_turnover,
+                "Inv Turnover": snapshot.inventory_turnover,
+            }
+            for snapshot in snapshots
+        ])
+        
+        st.dataframe(
+            df_technical.style.format(
+                {
+                    "RSI (14)": "{:.1f}",
+                    "Stochastic K": "{:.1f}",
+                    "Stochastic D": "{:.1f}",
+                    "Williams %R": "{:.1f}",
+                    "MACD": "{:.2f}",
+                    "MACD Signal": "{:.2f}",
+                    "50 DMA": "{:,.2f}",
+                    "200 DMA": "{:,.2f}",
+                    "BB Upper": "{:,.2f}",
+                    "BB Middle": "{:,.2f}",
+                    "BB Lower": "{:,.2f}",
+                    "OBV": "{:,.0f}",
+                    "Avg Vol (20d)": "{:,.0f}",
+                    "Volume Ratio": "{:.2f}",
+                    "Asset Turnover": "{:.2f}",
+                    "Inv Turnover": "{:.2f}",
+                },
+                na_rep="NA",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    
+    # Tab 5: Ownership & Timing
+    with tab5:
+        df_ownership = pd.DataFrame([
+            {
+                "Symbol": snapshot.symbol,
+                "Company": snapshot.short_name,
+                "Promoter Holding %": snapshot.promoter_holding_pct,
+                "Promoter Holding Δ": snapshot.promoter_holding_change,
+                "Inst Ownership %": snapshot.institutional_ownership,
+                "Float Shares (M)": snapshot.float_shares / 1e6 if snapshot.float_shares else None,
+                "Dividend Yield": snapshot.dividend_yield,
+                "Next Earnings": snapshot.earnings_date,
+                "Ex-Dividend Date": snapshot.ex_dividend_date,
+            }
+            for snapshot in snapshots
+        ])
+        
+        st.dataframe(
+            df_ownership.style.format(
+                {
+                    "Promoter Holding %": "{:.2%}",
+                    "Promoter Holding Δ": "{:.2%}",
+                    "Inst Ownership %": "{:.2%}",
+                    "Float Shares (M)": "{:.2f}",
+                    "Dividend Yield": "{:.2%}",
+                },
+                na_rep="NA",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def show_news(news_map: Dict[str, List[NewsItem]]) -> None:
@@ -591,18 +781,96 @@ def show_llm_recommendations(result, snapshots: List[StockSnapshot], compact: bo
     """Display LLM recommendations with optional compact mode using expanders."""
     st.subheader("💡 LLM Allocation Suggestions")
     st.write(result.summary)
-    if result.guidance:
-        # Show guidance as both toast and visible info for important messages
-        if any(keyword in result.guidance.lower() for keyword in ["cautious", "wait", "avoid", "warning", "risk"]):
-            st.toast("⚠️ " + result.guidance[:100], icon="⚠️")
-        st.info(result.guidance)
-
+    
     snapshot_map = {snapshot.symbol: snapshot for snapshot in snapshots}
-
+    
     if not result.allocations:
-        st.warning("LLM recommended waiting before investing.")
-        # Continue to show evaluation if present
+        # When LLM recommends waiting, show detailed analysis
+        st.warning("⚠️ LLM recommended waiting before investing.")
+        
+        if result.guidance:
+            # Extract and highlight key metrics from guidance
+            guidance_lower = result.guidance.lower()
+            
+            # Show guidance with enhanced formatting
+            with st.expander("📊 Detailed Reasoning & Metric Analysis", expanded=True):
+                st.markdown("**Why wait?**")
+                st.write(result.guidance)
+                
+                # Try to extract and display key metrics if mentioned
+                if any(keyword in guidance_lower for keyword in ["p/e", "pe ratio", "price-to-earnings"]):
+                    # Calculate and show average P/E if available
+                    pe_values = [
+                        s.fundamentals.get("trailingPE") 
+                        for s in snapshots 
+                        if s.fundamentals and s.fundamentals.get("trailingPE") is not None
+                    ]
+                    if pe_values:
+                        avg_pe = sum(pe_values) / len(pe_values)
+                        st.metric("Average P/E Ratio", f"{avg_pe:.2f}", 
+                                help="P/E > 25 typically indicates overvaluation")
+                
+                if any(keyword in guidance_lower for keyword in ["rsi", "overbought"]):
+                    # Calculate and show average RSI if available
+                    rsi_values = [s.rsi_14 for s in snapshots if s.rsi_14 is not None]
+                    if rsi_values:
+                        avg_rsi = sum(rsi_values) / len(rsi_values)
+                        overbought_count = sum(1 for rsi in rsi_values if rsi > 70)
+                        st.metric("Average RSI (14)", f"{avg_rsi:.1f}", 
+                                help=f"{overbought_count} stocks are overbought (RSI > 70)")
+                
+                if any(keyword in guidance_lower for keyword in ["52w", "52-week", "52 week"]):
+                    # Calculate and show 52W high distance stats
+                    dist_52w_values = [s.dist_52w_high for s in snapshots if s.dist_52w_high is not None]
+                    if dist_52w_values:
+                        avg_dist = sum(dist_52w_values) / len(dist_52w_values)
+                        near_high_count = sum(1 for dist in dist_52w_values if dist > -0.05)  # Within 5% of 52W high
+                        st.metric("Avg Distance from 52W High", f"{avg_dist:.2%}",
+                                help=f"{near_high_count} stocks are within 5% of 52W high")
+                
+                if any(keyword in guidance_lower for keyword in ["forecast", "bearish", "bullish"]):
+                    # Calculate and show forecast trends
+                    forecast_values = [s.forecast_slope for s in snapshots if s.forecast_slope is not None]
+                    if forecast_values:
+                        bearish_count = sum(1 for f in forecast_values if f < 0)
+                        avg_forecast = sum(forecast_values) / len(forecast_values)
+                        st.metric("Forecast Trend", f"{avg_forecast:.2%} average",
+                                help=f"{bearish_count}/{len(forecast_values)} stocks show bearish 6M forecasts")
+                
+                if any(keyword in guidance_lower for keyword in ["beta", "volatility"]):
+                    # Calculate and show beta/volatility
+                    beta_values = [s.beta for s in snapshots if s.beta is not None]
+                    if beta_values:
+                        avg_beta = sum(beta_values) / len(beta_values)
+                        high_vol_count = sum(1 for b in beta_values if b > 1.2)
+                        st.metric("Average Beta", f"{avg_beta:.2f}",
+                                help=f"{high_vol_count} stocks have high volatility (Beta > 1.2)")
+                
+                if any(keyword in guidance_lower for keyword in ["peg", "price/earnings to growth"]):
+                    # Calculate and show PEG ratios
+                    peg_values = [s.peg_ratio for s in snapshots if s.peg_ratio is not None]
+                    if peg_values:
+                        avg_peg = sum(peg_values) / len(peg_values)
+                        overvalued_peg = sum(1 for p in peg_values if p > 1.5)
+                        st.metric("Average PEG Ratio", f"{avg_peg:.2f}",
+                                help=f"{overvalued_peg} stocks have PEG > 1.5 (overvalued)")
+                
+                # Show market mood context
+                if any(keyword in guidance_lower for keyword in ["greed", "fear", "market mood"]):
+                    st.markdown("---")
+                    st.markdown("**Market Sentiment Context:**")
+                    st.markdown("Market mood index reflects overall market sentiment (Fear to Greed scale). "
+                              "A high greed index suggests overvaluation, while fear indicates potential buying opportunities.")
+        else:
+            st.info("No detailed reasoning provided. The recommendation is based on overall market conditions.")
     else:
+        # Normal display for when allocations are provided
+        if result.guidance:
+            # Show guidance as both toast and visible info for important messages
+            if any(keyword in result.guidance.lower() for keyword in ["cautious", "wait", "avoid", "warning", "risk"]):
+                st.toast("⚠️ " + result.guidance[:100], icon="⚠️")
+            st.info(result.guidance)
+        
         # Summary table
         allocations_df = pd.DataFrame(
             [
@@ -921,7 +1189,21 @@ def show_run_details(run) -> None:
 
 
 def show_recent_runs() -> None:
-    runs = fetch_recent_runs(limit=10)
+    # Count unknown runs
+    runs = fetch_recent_runs(limit=1000)  # Get more to count unknown
+    unknown_count = sum(1 for run in runs if run.universe_name is None)
+    runs = runs[:10]  # Limit for display
+    
+    # Add button to delete unknown runs if any exist
+    if unknown_count > 0:
+        st.warning(f"⚠️ Found {unknown_count} run(s) with 'Unknown' universe_name.")
+        if st.button("🗑️ Delete All Unknown Runs", type="secondary", key="delete_unknown_runs"):
+            deleted_count = delete_unknown_runs()
+            if deleted_count > 0:
+                st.success(f"✅ Successfully deleted {deleted_count} unknown run(s).")
+                st.rerun()
+        st.markdown("---")
+    
     if not runs:
         st.info("No previous runs found. Run an analysis to get started.")
         return
@@ -1322,11 +1604,39 @@ def show_performance_tracking() -> None:
             
             for idx, pred in enumerate(predictions):
                 try:
-                    ticker = yf.Ticker(f"{pred.symbol}.NS" if not pred.symbol.endswith('.NS') else pred.symbol)
+                    ticker_symbol = f"{pred.symbol}.NS" if not pred.symbol.endswith('.NS') else pred.symbol
+                    ticker = yf.Ticker(ticker_symbol)
+                    
+                    # Fetch current price
                     hist = ticker.history(period="1d")
+                    current_price = None
                     if not hist.empty and "Close" in hist.columns:
                         current_price = float(hist["Close"].iloc[-1])
-                        update_prediction_price(pred.id, current_price)
+                    
+                    # Fetch current fundamental metrics
+                    current_metrics = None
+                    if current_price:
+                        try:
+                            info = ticker.get_info()
+                            # Extract current fundamental metrics
+                            current_metrics = {
+                                "pe": info.get("trailingPE"),
+                                "peg": info.get("pegRatio"),
+                                "roe": info.get("returnOnEquity"),
+                                "roic": None,  # Will need to calculate from financials if needed
+                                "debt_to_equity": info.get("debtToEquity"),
+                                "interest_coverage": None,  # Will need to calculate if needed
+                                "revenue_growth": None,  # Will need to calculate if needed
+                                "profit_growth": None,  # Will need to calculate if needed
+                                "beta": info.get("beta"),
+                            }
+                            # Get ROIC if available (would need to calculate from financials/balance sheet)
+                            # For now, we'll use what's available from info
+                        except Exception:
+                            current_metrics = None
+                    
+                    if current_price:
+                        update_prediction_price(pred.id, current_price, current_metrics=current_metrics)
                         updated_count += 1
                     else:
                         error_count += 1
@@ -1345,152 +1655,210 @@ def show_performance_tracking() -> None:
     # Refresh predictions after update
     predictions = fetch_predictions_by_run_id(selected_run_id)
     
-    # Prepare data for display
-    pred_data = []
-    symbols = []
-    suggested_prices = []
-    current_prices = []
-    returns = []
-    allocation_pcts = []
-    total_invested = 0.0
-    total_current_value = 0.0
+    # Create tabs for price tracking and fundamental metrics tracking
+    perf_tab1, perf_tab2 = st.tabs(["💰 Price Performance", "📊 Fundamental Metrics Change"])
     
-    for pred in predictions:
-        return_pct = None
-        if pred.current_price and pred.suggested_price:
-            return_pct = (pred.current_price - pred.suggested_price) / pred.suggested_price
+    with perf_tab1:
+        # Price Performance Tab
+        pred_data = []
+        symbols = []
+        suggested_prices = []
+        current_prices = []
+        returns = []
+        allocation_pcts = []
+        total_invested = 0.0
+        total_current_value = 0.0
         
-        # Calculate profit for this stock if investment amount is known
-        stock_profit = None
-        stock_value = None
-        if pred.current_price and pred.suggested_price and pred.allocation_pct and selected_run.invest_amount:
-            invested_amount = selected_run.invest_amount * (pred.allocation_pct / 100)
-            shares = invested_amount / pred.suggested_price
-            current_value = shares * pred.current_price
-            stock_profit = current_value - invested_amount
-            stock_value = current_value
-            total_invested += invested_amount
-            total_current_value += current_value
-        
-        pred_data.append({
-            "Symbol": pred.symbol,
-            "Allocation %": f"{pred.allocation_pct:.1f}%",
-            "Suggested Price (Then)": f"₹{pred.suggested_price:,.2f}",
-            "Current Price (Now)": f"₹{pred.current_price:,.2f}" if pred.current_price else "Not updated",
-            "Change": f"₹{pred.current_price - pred.suggested_price:+,.2f}" if pred.current_price and pred.suggested_price else "N/A",
-            "Return %": f"{return_pct:+.2%}" if return_pct is not None else "N/A",
-            "Profit": f"₹{stock_profit:+,.2f}" if stock_profit is not None else "N/A",
-            "Days": pred.days_since_suggestion or "N/A",
-        })
-        
-        if pred.current_price and pred.suggested_price:
-            symbols.append(pred.symbol)
-            suggested_prices.append(pred.suggested_price)
-            current_prices.append(pred.current_price)
-            returns.append(return_pct * 100)  # Convert to percentage
-            allocation_pcts.append(pred.allocation_pct)
-    
-    # Display summary metrics
-    if total_invested > 0:
-        total_profit = total_current_value - total_invested
-        total_profit_pct = (total_profit / total_invested) * 100
-        
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Invested", f"₹{total_invested:,.2f}")
-        with col2:
-            st.metric("Current Value", f"₹{total_current_value:,.2f}")
-        with col3:
-            st.metric("Total Profit/Loss", f"₹{total_profit:+,.2f}", f"{total_profit_pct:+.2f}%")
-        with col4:
-            updated_count = sum(1 for p in predictions if p.current_price is not None)
-            st.metric("Prices Updated", f"{updated_count}/{len(predictions)}")
-    
-    # Display table
-    st.markdown("### 📊 Stock Performance Table")
-    df = pd.DataFrame(pred_data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    
-    # Charts
-    if symbols and suggested_prices and current_prices:
-        tab1, tab2, tab3 = st.tabs(["📈 Price Comparison", "📊 Returns by Stock", "💰 Profit by Stock"])
-        
-        with tab1:
-            # Price comparison chart (Suggested vs Current)
-            comparison_df = pd.DataFrame({
-                "Symbol": symbols,
-                "Suggested Price": suggested_prices,
-                "Current Price": current_prices,
+        for pred in predictions:
+            return_pct = None
+            if pred.current_price and pred.suggested_price:
+                return_pct = (pred.current_price - pred.suggested_price) / pred.suggested_price
+            
+            # Calculate profit for this stock if investment amount is known
+            stock_profit = None
+            stock_value = None
+            if pred.current_price and pred.suggested_price and pred.allocation_pct and selected_run.invest_amount:
+                invested_amount = selected_run.invest_amount * (pred.allocation_pct / 100)
+                shares = invested_amount / pred.suggested_price
+                current_value = shares * pred.current_price
+                stock_profit = current_value - invested_amount
+                stock_value = current_value
+                total_invested += invested_amount
+                total_current_value += current_value
+            
+            pred_data.append({
+                "Symbol": pred.symbol,
+                "Allocation %": f"{pred.allocation_pct:.1f}%",
+                "Suggested Price (Then)": f"₹{pred.suggested_price:,.2f}",
+                "Current Price (Now)": f"₹{pred.current_price:,.2f}" if pred.current_price else "Not updated",
+                "Change": f"₹{pred.current_price - pred.suggested_price:+,.2f}" if pred.current_price and pred.suggested_price else "N/A",
+                "Return %": f"{return_pct:+.2%}" if return_pct is not None else "N/A",
+                "Profit": f"₹{stock_profit:+,.2f}" if stock_profit is not None else "N/A",
+                "Days": pred.days_since_suggestion or "N/A",
             })
             
-            fig = px.bar(
-                comparison_df,
-                x="Symbol",
-                y=["Suggested Price", "Current Price"],
-                title="Suggested Price (Then) vs Current Price (Now)",
-                labels={"value": "Price (₹)", "variable": "Price Type"},
-                barmode="group",
-                color_discrete_map={"Suggested Price": "blue", "Current Price": "green"},
-            )
-            fig.update_xaxes(tickangle=45)
-            st.plotly_chart(fig, use_container_width=True)
+            if pred.current_price and pred.suggested_price:
+                symbols.append(pred.symbol)
+                suggested_prices.append(pred.suggested_price)
+                current_prices.append(pred.current_price)
+                returns.append(return_pct * 100)  # Convert to percentage
+                allocation_pcts.append(pred.allocation_pct)
         
-        with tab2:
-            # Returns percentage chart
-            returns_df = pd.DataFrame({
-                "Symbol": symbols,
-                "Return %": returns,
-            })
+        # Display summary metrics
+        if total_invested > 0:
+            total_profit = total_current_value - total_invested
+            total_profit_pct = (total_profit / total_invested) * 100
             
-            fig = px.bar(
-                returns_df,
-                x="Symbol",
-                y="Return %",
-                title="Return Percentage by Stock",
-                labels={"Return %": "Return (%)", "Symbol": "Stock Symbol"},
-                color="Return %",
-                color_continuous_scale="RdYlGn",
-            )
-            fig.update_xaxes(tickangle=45)
-            fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break-even")
-            st.plotly_chart(fig, use_container_width=True)
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Invested", f"₹{total_invested:,.2f}")
+            with col2:
+                st.metric("Current Value", f"₹{total_current_value:,.2f}")
+            with col3:
+                st.metric("Total Profit/Loss", f"₹{total_profit:+,.2f}", f"{total_profit_pct:+.2f}%")
+            with col4:
+                updated_count = sum(1 for p in predictions if p.current_price is not None)
+                st.metric("Prices Updated", f"{updated_count}/{len(predictions)}")
         
-        with tab3:
-            # Profit by stock chart (if investment amount is known)
-            if total_invested > 0:
-                profit_data = []
-                for pred in predictions:
-                    if pred.current_price and pred.suggested_price and pred.allocation_pct:
-                        invested_amount = selected_run.invest_amount * (pred.allocation_pct / 100)
-                        shares = invested_amount / pred.suggested_price
-                        current_value = shares * pred.current_price
-                        stock_profit = current_value - invested_amount
-                        profit_data.append({
-                            "Symbol": pred.symbol,
-                            "Profit": stock_profit,
-                        })
+        # Display table
+        st.markdown("### 📊 Stock Performance Table")
+        df = pd.DataFrame(pred_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # Charts
+        if symbols and suggested_prices and current_prices:
+            tab1, tab2, tab3 = st.tabs(["📈 Price Comparison", "📊 Returns by Stock", "💰 Profit by Stock"])
+            
+            with tab1:
+                # Price comparison chart (Suggested vs Current)
+                comparison_df = pd.DataFrame({
+                    "Symbol": symbols,
+                    "Suggested Price": suggested_prices,
+                    "Current Price": current_prices,
+                })
                 
-                if profit_data:
-                    profit_df = pd.DataFrame(profit_data)
-                    fig = px.bar(
-                        profit_df,
-                        x="Symbol",
-                        y="Profit",
-                        title="Profit/Loss by Stock (₹)",
-                        labels={"Profit": "Profit/Loss (₹)", "Symbol": "Stock Symbol"},
-                        color="Profit",
-                        color_continuous_scale="RdYlGn",
-                    )
-                    fig.update_xaxes(tickangle=45)
-                    fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break-even")
-                    st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Investment amount not available for profit calculation.")
+                fig = px.bar(
+                    comparison_df,
+                    x="Symbol",
+                    y=["Suggested Price", "Current Price"],
+                    title="Suggested Price (Then) vs Current Price (Now)",
+                    labels={"value": "Price (₹)", "variable": "Price Type"},
+                    barmode="group",
+                    color_discrete_map={"Suggested Price": "blue", "Current Price": "green"},
+                )
+                fig.update_xaxes(tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with tab2:
+                # Returns percentage chart
+                returns_df = pd.DataFrame({
+                    "Symbol": symbols,
+                    "Return %": returns,
+                })
+                
+                fig = px.bar(
+                    returns_df,
+                    x="Symbol",
+                    y="Return %",
+                    title="Return Percentage by Stock",
+                    labels={"Return %": "Return (%)", "Symbol": "Stock Symbol"},
+                    color="Return %",
+                    color_continuous_scale="RdYlGn",
+                )
+                fig.update_xaxes(tickangle=45)
+                fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break-even")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with tab3:
+                # Profit by stock chart (if investment amount is known)
+                if total_invested > 0:
+                    profit_data = []
+                    for pred in predictions:
+                        if pred.current_price and pred.suggested_price and pred.allocation_pct:
+                            invested_amount = selected_run.invest_amount * (pred.allocation_pct / 100)
+                            shares = invested_amount / pred.suggested_price
+                            current_value = shares * pred.current_price
+                            stock_profit = current_value - invested_amount
+                            profit_data.append({
+                                "Symbol": pred.symbol,
+                                "Profit": stock_profit,
+                            })
+                    
+                    if profit_data:
+                        profit_df = pd.DataFrame(profit_data)
+                        fig = px.bar(
+                            profit_df,
+                            x="Symbol",
+                            y="Profit",
+                            title="Profit/Loss by Stock (₹)",
+                            labels={"Profit": "Profit/Loss (₹)", "Symbol": "Stock Symbol"},
+                            color="Profit",
+                            color_continuous_scale="RdYlGn",
+                        )
+                        fig.update_xaxes(tickangle=45)
+                        fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break-even")
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Investment amount not available for profit calculation.")
+    
+    with perf_tab2:
+        # Fundamental Metrics Change Tab
+        st.markdown("### 📊 Fundamental Metrics Comparison")
+        st.info("Compare fundamental metrics at suggestion time vs. current values. Click 'Update Prices' to refresh current metrics.")
+        
+        metrics_data = []
+        for pred in predictions:
+            metrics_data.append({
+                "Symbol": pred.symbol,
+                "Allocation %": f"{pred.allocation_pct:.1f}%",
+                # P/E Ratio
+                "P/E (Then)": f"{pred.suggested_pe:.2f}" if pred.suggested_pe else "N/A",
+                "P/E (Now)": f"{pred.current_pe:.2f}" if pred.current_pe else "N/A",
+                "P/E Δ": f"{(pred.current_pe - pred.suggested_pe):+.2f}" if pred.current_pe and pred.suggested_pe else "N/A",
+                # PEG Ratio
+                "PEG (Then)": f"{pred.suggested_peg:.2f}" if pred.suggested_peg else "N/A",
+                "PEG (Now)": f"{pred.current_peg:.2f}" if pred.current_peg else "N/A",
+                "PEG Δ": f"{(pred.current_peg - pred.suggested_peg):+.2f}" if pred.current_peg and pred.suggested_peg else "N/A",
+                # ROE
+                "ROE (Then)": f"{pred.suggested_roe:.2%}" if pred.suggested_roe else "N/A",
+                "ROE (Now)": f"{pred.current_roe:.2%}" if pred.current_roe else "N/A",
+                "ROE Δ": f"{(pred.current_roe - pred.suggested_roe):+.2%}" if pred.current_roe and pred.suggested_roe else "N/A",
+                # ROIC
+                "ROIC (Then)": f"{pred.suggested_roic:.2%}" if pred.suggested_roic else "N/A",
+                "ROIC (Now)": f"{pred.current_roic:.2%}" if pred.current_roic else "N/A",
+                "ROIC Δ": f"{(pred.current_roic - pred.suggested_roic):+.2%}" if pred.current_roic and pred.suggested_roic else "N/A",
+                # Debt/Equity
+                "Debt/Eq (Then)": f"{pred.suggested_debt_to_equity:.2f}" if pred.suggested_debt_to_equity else "N/A",
+                "Debt/Eq (Now)": f"{pred.current_debt_to_equity:.2f}" if pred.current_debt_to_equity else "N/A",
+                "Debt/Eq Δ": f"{(pred.current_debt_to_equity - pred.suggested_debt_to_equity):+.2f}" if pred.current_debt_to_equity and pred.suggested_debt_to_equity else "N/A",
+                # Interest Coverage
+                "Int Cov (Then)": f"{pred.suggested_interest_coverage:.2f}x" if pred.suggested_interest_coverage else "N/A",
+                "Int Cov (Now)": f"{pred.current_interest_coverage:.2f}x" if pred.current_interest_coverage else "N/A",
+                "Int Cov Δ": f"{(pred.current_interest_coverage - pred.suggested_interest_coverage):+.2f}x" if pred.current_interest_coverage and pred.suggested_interest_coverage else "N/A",
+                # Revenue Growth
+                "Rev Growth (Then)": f"{pred.suggested_revenue_growth:.2%}" if pred.suggested_revenue_growth else "N/A",
+                "Rev Growth (Now)": f"{pred.current_revenue_growth:.2%}" if pred.current_revenue_growth else "N/A",
+                "Rev Growth Δ": f"{(pred.current_revenue_growth - pred.suggested_revenue_growth):+.2%}" if pred.current_revenue_growth and pred.suggested_revenue_growth else "N/A",
+                # Profit Growth
+                "Profit Growth (Then)": f"{pred.suggested_profit_growth:.2%}" if pred.suggested_profit_growth else "N/A",
+                "Profit Growth (Now)": f"{pred.current_profit_growth:.2%}" if pred.current_profit_growth else "N/A",
+                "Profit Growth Δ": f"{(pred.current_profit_growth - pred.suggested_profit_growth):+.2%}" if pred.current_profit_growth and pred.suggested_profit_growth else "N/A",
+                # Beta
+                "Beta (Then)": f"{pred.suggested_beta:.2f}" if pred.suggested_beta else "N/A",
+                "Beta (Now)": f"{pred.current_beta:.2f}" if pred.current_beta else "N/A",
+                "Beta Δ": f"{(pred.current_beta - pred.suggested_beta):+.2f}" if pred.current_beta and pred.suggested_beta else "N/A",
+            })
+        
+        if metrics_data:
+            metrics_df = pd.DataFrame(metrics_data)
+            st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No fundamental metrics data available. Run an analysis and then update prices to see metric changes.")
 
 
 def main() -> None:
     inputs = sidebar_inputs()
-    render_intro()
+    render_intro(is_agentic=False)
 
     st.caption(
         f"OpenAI key detected: {'Yes' if os.getenv('OPENAI_API_KEY') else 'No'} | "

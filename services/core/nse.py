@@ -42,11 +42,30 @@ INDEX_CSV_MAP = {
         "https://archives.nseindia.com/content/indices/ind_niftymidcap150_list.csv",
         "https://www1.nseindia.com/content/indices/ind_niftymidcap150_list.csv",
     ],
+    "NIFTY MIDCAP": [
+        "https://archives.nseindia.com/content/indices/ind_niftymidcap150_list.csv",
+        "https://www1.nseindia.com/content/indices/ind_niftymidcap150_list.csv",
+    ],
     "NIFTY 200": [
         "https://archives.nseindia.com/content/indices/ind_nifty200list.csv",
         "https://www1.nseindia.com/content/indices/ind_nifty200list.csv",
     ],
     "NIFTY 500": NIFTY_500_CSV_FALLBACKS,
+    # BSE Indices
+    "BSE SENSEX": [
+        "https://www.bseindia.com/corporates/List_Scrips.aspx",
+        # Note: BSE doesn't provide direct CSV. We'll need to use BSE API or web scraping
+        # For now, adding placeholder - this will need custom implementation
+    ],
+    "BSE 100": [
+        "https://www.bseindia.com/corporates/List_Scrips.aspx",
+    ],
+    "BSE 200": [
+        "https://www.bseindia.com/corporates/List_Scrips.aspx",
+    ],
+    "BSE 500": [
+        "https://www.bseindia.com/corporates/List_Scrips.aspx",
+    ],
 }
 AVAILABLE_INDICES = list(INDEX_CSV_MAP.keys())
 
@@ -209,9 +228,60 @@ def top_symbols_from_nifty500(limit: int = 100) -> List[str]:
     return symbols[:limit]
 
 
+def _fetch_bse_index_constituents(index_name: str) -> pd.DataFrame:
+    """
+    Fetch BSE index constituents.
+    
+    Note: BSE doesn't provide direct CSV endpoints like NSE. This function uses
+    a static list of known constituents for BSE SENSEX. For other BSE indices,
+    consider using NSE equivalents or integrating with BSE API.
+    """
+    # Known BSE SENSEX constituents (30 stocks - these are the major blue-chip stocks)
+    # Note: This is a static list. For production, consider:
+    # 1. Using BSE API if available
+    # 2. Web scraping from BSE website
+    # 3. Third-party data providers
+    # 4. Periodic manual updates
+    
+    # BSE SENSEX 30 stocks (symbols in NSE format for compatibility)
+    BSE_SENSEX_CONSTITUENTS = [
+        "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
+        "HINDUNILVR", "SBIN", "BHARTIARTL", "ITC", "KOTAKBANK",
+        "AXISBANK", "LT", "ASIANPAINT", "MARUTI", "TITAN",
+        "SUNPHARMA", "NTPC", "BAJFINANCE", "NESTLEIND", "ULTRACEMCO",
+        "WIPRO", "ONGC", "TATAMOTORS", "POWERGRID", "M&M",
+        "INDUSINDBK", "BAJAJFINSV", "HCLTECH", "HDFCLIFE", "SBILIFE"
+    ]
+    
+    # Map index name to constituent list
+    BSE_INDEX_MAPPING = {
+        "BSE SENSEX": BSE_SENSEX_CONSTITUENTS,
+        # Note: BSE 100, 200, 500 would need full constituent lists
+        # These can be added when data sources are available
+    }
+    
+    constituents = BSE_INDEX_MAPPING.get(index_name)
+    if not constituents:
+        raise NSEAPIError(
+            f"BSE index '{index_name}' is not fully supported yet. "
+            "Currently only 'BSE SENSEX' has basic support. "
+            "For other BSE indices, please use NSE indices (e.g., NIFTY 50, NIFTY 500) "
+            "which have full support, or contact support for BSE API integration."
+        )
+    
+    # Create DataFrame with symbols
+    return pd.DataFrame({"symbol": constituents})
+
+
 def fetch_index_constituents(index_name: str) -> pd.DataFrame:
-    """Fetch constituents for a given NSE index using published CSV lists."""
+    """Fetch constituents for a given NSE or BSE index using published CSV lists."""
     normalized = index_name.strip().upper()
+    
+    # Handle BSE indices
+    if normalized.startswith("BSE"):
+        return _fetch_bse_index_constituents(normalized)
+    
+    # Handle NSE indices
     if normalized == "NIFTY 500":
         return fetch_nifty_500_constituents()
 

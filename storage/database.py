@@ -97,6 +97,27 @@ class PredictionTracking(Base):
     days_since_suggestion: Mapped[Optional[int]] = mapped_column(nullable=True)
     rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     risks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Fundamental metrics at suggestion time
+    suggested_pe: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_peg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_roe: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_roic: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_debt_to_equity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_interest_coverage: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_revenue_growth: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_profit_growth: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    suggested_beta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Current fundamental metrics (updated when prices are updated)
+    current_pe: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_peg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_roe: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_roic: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_debt_to_equity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_interest_coverage: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_revenue_growth: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_profit_growth: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_beta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    current_metrics_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     run: Mapped[RunRecord] = relationship(back_populates="predictions")
 
@@ -140,6 +161,35 @@ def _ensure_additional_columns() -> None:
     if statements:
         with engine.begin() as connection:
             for stmt in statements:
+                connection.execute(text(stmt))
+    
+    # Ensure additional columns for prediction_tracking table
+    if not inspector.has_table("prediction_tracking"):
+        return
+    
+    pred_columns = {col["name"] for col in inspector.get_columns("prediction_tracking")}
+    pred_statements = []
+    
+    # Fundamental metrics at suggestion time
+    for col_name in [
+        "suggested_pe", "suggested_peg", "suggested_roe", "suggested_roic",
+        "suggested_debt_to_equity", "suggested_interest_coverage",
+        "suggested_revenue_growth", "suggested_profit_growth", "suggested_beta",
+        # Current fundamental metrics
+        "current_pe", "current_peg", "current_roe", "current_roic",
+        "current_debt_to_equity", "current_interest_coverage",
+        "current_revenue_growth", "current_profit_growth", "current_beta",
+        "current_metrics_updated_at",
+    ]:
+        if col_name not in pred_columns:
+            if col_name == "current_metrics_updated_at":
+                pred_statements.append(f"ALTER TABLE prediction_tracking ADD COLUMN {col_name} DATETIME")
+            else:
+                pred_statements.append(f"ALTER TABLE prediction_tracking ADD COLUMN {col_name} FLOAT")
+    
+    if pred_statements:
+        with engine.begin() as connection:
+            for stmt in pred_statements:
                 connection.execute(text(stmt))
 
 
@@ -316,14 +366,28 @@ def log_run(
         )
         
         # Create prediction tracking record
-        # Find the suggested price from snapshots
+        # Find the suggested price and fundamental metrics from snapshots
         suggested_price = None
+        suggested_metrics = {}
         for snapshot in snapshots:
             if snapshot.symbol == suggestion.symbol:
                 # Get latest price from price_history if available
                 if snapshot.price_history is not None and not snapshot.price_history.empty:
                     if "Close" in snapshot.price_history.columns:
                         suggested_price = float(snapshot.price_history["Close"].iloc[-1])
+                
+                # Extract fundamental metrics at suggestion time
+                suggested_metrics = {
+                    "suggested_pe": snapshot.fundamentals.get("trailingPE"),
+                    "suggested_peg": snapshot.peg_ratio,
+                    "suggested_roe": snapshot.fundamentals.get("returnOnEquity"),
+                    "suggested_roic": snapshot.roic,
+                    "suggested_debt_to_equity": snapshot.fundamentals.get("debtToEquity"),
+                    "suggested_interest_coverage": snapshot.interest_coverage,
+                    "suggested_revenue_growth": snapshot.revenue_growth_yoy,
+                    "suggested_profit_growth": snapshot.profit_growth_yoy,
+                    "suggested_beta": snapshot.beta,
+                }
                 break
         
         if suggested_price is not None:
@@ -336,6 +400,7 @@ def log_run(
                     rationale=suggestion.rationale,
                     risks=suggestion.risks,
                     action_taken=None,  # User can update this later
+                    **suggested_metrics,  # Include all fundamental metrics
                 )
             )
 
@@ -448,3 +513,25 @@ def fetch_predictions_by_run_id(run_id: str) -> List[PredictionTracking]:
             .all()
         )
 
+
+def delete_unknown_runs() -> int:
+    """Delete all runs where universe_name is None (displayed as 'Unknown').
+    
+    Returns:
+        Number of runs deleted.
+    """
+    init_db()
+    with SessionLocal() as session:
+        # Find all runs with universe_name as None
+        unknown_runs = session.query(RunRecord).filter(
+            RunRecord.universe_name.is_(None)
+        ).all()
+        
+        count = len(unknown_runs)
+        
+        # Delete these runs (cascade will handle suggestions and predictions)
+        for run in unknown_runs:
+            session.delete(run)
+        
+        session.commit()
+        return count
