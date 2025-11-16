@@ -360,32 +360,37 @@ CRITICAL RULES:
 1. DO NOT recommend stocks with BEARISH 6M Forecast (negative forecast_slope) unless there are exceptional fundamental reasons AND the investor has a very long horizon (5+ years).
 2. Prioritize stocks with positive forecast trends, strong technical indicators (RSI not overbought, bullish MACD, Golden Cross), and solid fundamentals.
 3. If a stock shows BEARISH forecast but strong fundamentals, mention this contradiction clearly in risks and consider lower allocation or waiting.
-4. MARKET MOOD STRATEGY (CRITICAL):
-   - If market mood is "Fear" or "Extreme Fear" (index < 45): This is a BUYING OPPORTUNITY. Consider increasing allocation to quality stocks as fear often creates value. Be more aggressive in recommendations.
-   - If market mood is "Greed" or "Extreme Greed" (index > 55): MARKET IS OVERVALUED. You MUST prioritize recommending to WAIT rather than buy. Only recommend stocks if there are exceptional value opportunities with very strong fundamentals (e.g., low P/E, high dividend yield, strong revenue growth) AND if the investor has a long horizon (5+ years). In most cases with "Greed" or "Extreme Greed", return an EMPTY allocations list and explain in guidance why waiting is the better option.
-   - If market mood is "Neutral" (45-55): Proceed with standard analysis.
-   - REMEMBER: If you say the market is in a state of greed/overvaluation, your guidance MUST recommend waiting or be very conservative. DO NOT contradict yourself by recommending multiple stocks while warning about overvaluation.
-5. If the investor ALREADY OWNS the evaluation stock and its forecast is bearish, default to a **SELL / book profits** stance unless there is overwhelming long-term conviction.
-6. Only recommend SELL when the realised gain is meaningful for a long-term investor (at least 5% in percentage terms and roughly ₹5,000 absolute). Otherwise recommend holding/accumulating or waiting.
+
+STOCK-BY-STOCK EVALUATION APPROACH:
+- EVALUATE EACH STOCK INDIVIDUALLY based on its own merits, not market-wide averages.
+- Market mood is ONE FACTOR among many (fundamentals, technicals, valuation, growth) - NOT the sole deciding factor.
+- Consider market mood as CONTEXT, not a hard rule:
+  * Fear/Extreme Fear (< 45): Favorable for finding undervalued opportunities, but still evaluate each stock's fundamentals.
+  * Greed/Extreme Greed (> 55): Exercise more caution and look for stocks with strong value propositions (low P/E, good PEG, strong fundamentals), but DO NOT automatically wait. Many quality stocks can still be good investments even in a greedy market.
+  * Neutral (45-55): Standard evaluation criteria apply.
+- For each stock, check:
+  * Is the forecast trend positive (bullish)?
+  * Are technical indicators favorable (RSI not overbought, bullish signals)?
+  * Is valuation reasonable (P/E < 25 for growth stocks, PEG < 1.5, P/B reasonable)?
+  * Are fundamentals strong (ROE > 15%, ROIC > 10%, positive revenue/profit growth)?
+  * Is the stock trading at a reasonable distance from 52W high (< 20% below suggests not extremely overvalued)?
+  * Are there any red flags (high debt, negative cash flow, declining growth)?
+- Market mood should influence ALLOCATION SIZE (smaller during greed, larger during fear) but should not prevent you from recommending genuinely good individual stocks.
+
+4. If the investor ALREADY OWNS the evaluation stock and its forecast is bearish, default to a **SELL / book profits** stance unless there is overwhelming long-term conviction.
+5. Only recommend SELL when the realised gain is meaningful for a long-term investor (at least 5% in percentage terms and roughly ₹5,000 absolute). Otherwise recommend holding/accumulating or waiting.
 
 DETAILED ANALYSIS REQUIRED:
-- When recommending to WAIT, you MUST provide a detailed explanation that goes beyond just the market mood index.
-- Include specific metrics that influenced your decision, such as:
-  * Average/median P/E ratios across stocks (if >25, mention overvaluation)
-  * RSI levels (if many stocks are overbought >70, mention technical overvaluation)
-  * Distance from 52W highs (if stocks are near 52W highs, mention elevated valuations)
-  * Forecast trends (if many stocks show bearish forecasts, mention this)
-  * Beta/volatility levels (if high, mention market risk)
-  * PEG ratios (if >1.5, mention growth not justifying valuation)
-  * Debt levels (if high debt/equity ratios, mention financial stress)
-  * Revenue/profit growth trends (if declining, mention fundamental weakness)
-- Be specific: Instead of "market is overvalued", say "average P/E of 28 across analyzed stocks indicates overvaluation, with 60% of stocks trading within 5% of 52-week highs and RSI levels averaging 68, suggesting limited upside potential."
-- Reference actual numbers from the data provided, not generic statements.
+- When recommending to WAIT for specific stocks, provide individual stock-level analysis.
+- Reference SPECIFIC METRICS FOR EACH STOCK, not averages across all stocks.
+- Example: "Stock ABC has P/E of 32 (overvalued), RSI of 75 (overbought), and is trading at 2% below 52W high. Stock XYZ has P/E of 18 (fair), RSI of 45 (neutral), and strong fundamentals - recommended despite overall market greed."
+- When market mood is Greed/Extreme Greed, mention it as context but focus on identifying stocks with individual value propositions that overcome the general market condition.
+- Be specific with actual numbers from the data provided for EACH stock you evaluate, not generic market-wide statements.
 
 Analyse the data, decide whether to invest now, wait, or partially allocate. Return a JSON object with:
 {{
   "summary": "<short summary>",
-  "guidance": "<overall guidance with DETAILED metric analysis. If recommending wait, explain which specific metrics (P/E, RSI, 52W high distance, forecast trends, beta, etc.) influenced this decision. Include actual numbers from the data.>",
+  "guidance": "<overall guidance with INDIVIDUAL STOCK-LEVEL analysis. Evaluate each stock on its own merits. If recommending wait for certain stocks, explain which specific metrics FOR EACH STOCK (P/E, RSI, 52W high distance, forecast trends, beta, etc.) influenced this decision. Include actual numbers from the data for individual stocks, not market-wide averages. Market mood should be mentioned as context but not as the sole reason to wait.>",
   "allocations": [
      {{
         "symbol": "<ticker>",
@@ -396,7 +401,7 @@ Analyse the data, decide whether to invest now, wait, or partially allocate. Ret
   ]
 }}
 
-If recommending to wait entirely, set allocations to an empty list and explain why in guidance with SPECIFIC METRIC REFERENCES.
+If recommending to wait entirely (rare - only if truly no stocks meet quality criteria), set allocations to an empty list and explain why in guidance with SPECIFIC STOCK-LEVEL METRIC REFERENCES for each evaluated stock.
 Ensure allocation percentages sum to <= 100. Use concise language.
 If no specific stock evaluation is requested, set "stock_evaluation": null.
 """
@@ -420,12 +425,12 @@ def _invoke_llm(prompt: str) -> str:
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.2,
-        max_tokens=900,
+        max_tokens=2000,  # Increased to handle detailed stock-by-stock analysis
         response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",
-                "content": "You are a financial planning assistant focusing on Indian equities. Provide structured JSON outputs and note uncertainties.",
+                "content": "You are a financial planning assistant focusing on Indian equities. You MUST return valid JSON only, no markdown, no code blocks, just raw JSON. Provide structured JSON outputs and note uncertainties.",
             },
             {"role": "user", "content": prompt},
         ],
@@ -443,10 +448,44 @@ def _invoke_llm(prompt: str) -> str:
 
 
 def _parse_llm_json(raw: str, snapshots: Iterable[StockSnapshot]) -> LLMResult:
+    """Parse LLM JSON response with fallback handling for markdown-wrapped JSON."""
+    # Try to extract JSON from markdown code blocks if present
+    cleaned_raw = raw.strip()
+    
+    # Remove markdown code block markers if present
+    if cleaned_raw.startswith("```json"):
+        cleaned_raw = cleaned_raw[7:]  # Remove ```json
+    elif cleaned_raw.startswith("```"):
+        cleaned_raw = cleaned_raw[3:]  # Remove ```
+    
+    if cleaned_raw.endswith("```"):
+        cleaned_raw = cleaned_raw[:-3]  # Remove trailing ```
+    
+    cleaned_raw = cleaned_raw.strip()
+    
+    # Try to find JSON object boundaries if wrapped in text
+    if not cleaned_raw.startswith("{"):
+        # Try to find the first {
+        start_idx = cleaned_raw.find("{")
+        if start_idx >= 0:
+            cleaned_raw = cleaned_raw[start_idx:]
+    
+    # Try to find the last } if JSON is embedded
+    if cleaned_raw.count("{") > cleaned_raw.count("}"):
+        # Unbalanced, try to fix by finding last }
+        last_brace = cleaned_raw.rfind("}")
+        if last_brace >= 0:
+            cleaned_raw = cleaned_raw[:last_brace + 1]
+    
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(cleaned_raw)
     except json.JSONDecodeError as exc:
-        raise LLMServiceError("LLM did not return valid JSON") from exc
+        # Include first 500 chars of raw response in error for debugging
+        error_msg = f"LLM did not return valid JSON. Raw response (first 500 chars): {raw[:500]}"
+        # Also include the cleaned version for comparison
+        if cleaned_raw != raw[:500]:
+            error_msg += f" | Cleaned version (first 500 chars): {cleaned_raw[:500]}"
+        raise LLMServiceError(error_msg) from exc
 
     summary = parsed.get("summary") or "No summary provided."
     guidance = parsed.get("guidance")
