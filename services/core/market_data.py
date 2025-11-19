@@ -873,11 +873,34 @@ def _extract_free_cash_flow(cashflow: pd.DataFrame | None) -> float | None:
 
 
 def _compute_forecast(
-    history: pd.DataFrame, periods: int = 126
+    history: pd.DataFrame,
+    periods: int = 126,
+    lookback_days: int = 252,
+    forecast_months: Optional[int] = None,
 ) -> Tuple[pd.DataFrame | None, float | None]:
+    """
+    Compute price forecast using log-linear regression.
+    
+    Args:
+        history: Historical price data
+        periods: Number of trading days to forecast (default 126 = 6 months)
+        lookback_days: Number of days to use for fitting (default 252 = 1 year)
+        forecast_months: Investment horizon in months. If provided, overrides periods.
+    
+    Returns:
+        Tuple of (forecast DataFrame, forecast_slope percentage)
+    """
     if history.empty or "Close" not in history.columns:
         return None, None
+    
+    # Convert forecast_months to trading days if provided
+    # Approximately 21 trading days per month
+    if forecast_months is not None:
+        periods = int(forecast_months * 21)
+    
     prices = history["Close"].dropna()
+    if lookback_days and len(prices) > lookback_days:
+        prices = prices.tail(lookback_days)
     if len(prices) < 10:
         return None, None
 
@@ -895,7 +918,7 @@ def _compute_forecast(
     last_date = history.index[-1]
     future_dates = pd.bdate_range(last_date, periods=periods + 1)[1:]
     forecast_df = pd.DataFrame({"date": future_dates, "forecast": forecast_prices})
-    # forecast_slope: expected 6-month return (positive = bullish, negative = bearish)
+    # forecast_slope: expected return over the forecast period (positive = bullish, negative = bearish)
     forecast_slope = None
     if len(forecast_prices) > 0 and prices.iloc[-1] > 0:
         forecast_slope = float(forecast_prices[-1] / prices.iloc[-1] - 1)
@@ -984,7 +1007,7 @@ def _calculate_technical_indicators(history: pd.DataFrame) -> Dict[str, float | 
     return indicators
 
 
-def _fetch_snapshot(symbol: str) -> StockSnapshot:
+def _fetch_snapshot(symbol: str, forecast_months: Optional[int] = None) -> StockSnapshot:
     ticker_symbol = _normalise_symbol(symbol)
     ticker = yf.Ticker(ticker_symbol)
 
@@ -1036,7 +1059,7 @@ def _fetch_snapshot(symbol: str) -> StockSnapshot:
 
     short_name = info.get("shortName") if info else None
 
-    forecast_df, forecast_slope = _compute_forecast(history)
+    forecast_df, forecast_slope = _compute_forecast(history, forecast_months=forecast_months)
     technicals = _calculate_technical_indicators(history)
     
     # Extract advanced metrics from info
@@ -1154,6 +1177,7 @@ def fetch_snapshots(
     symbols: Iterable[str],
     max_workers: int = 8,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    forecast_months: Optional[int] = None,
 ) -> Tuple[List[StockSnapshot], Dict[str, str]]:
     """Fetch price/fundamental snapshots in parallel.
 
@@ -1163,6 +1187,7 @@ def fetch_snapshots(
         symbols: List of stock symbols to fetch
         max_workers: Maximum number of parallel workers
         progress_callback: Optional callback function(symbol, completed, total) called after each fetch
+        forecast_months: Investment horizon in months. If None, defaults to 6 months.
     """
     snapshots: List[StockSnapshot] = []
     failures: Dict[str, str] = {}
@@ -1172,7 +1197,7 @@ def fetch_snapshots(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
-            executor.submit(_fetch_snapshot, symbol): symbol for symbol in symbols_list
+            executor.submit(_fetch_snapshot, symbol, forecast_months): symbol for symbol in symbols_list
         }
         
         completed = 0

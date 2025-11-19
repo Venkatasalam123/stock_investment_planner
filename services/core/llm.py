@@ -52,7 +52,7 @@ class LLMResult:
         }
 
 
-def _format_snapshots_for_prompt(snapshots: Iterable[StockSnapshot]) -> str:
+def _format_snapshots_for_prompt(snapshots: Iterable[StockSnapshot], forecast_months: int = 6) -> str:
     lines: List[str] = []
     for snapshot in snapshots:
         fundamentals = snapshot.fundamentals or {}
@@ -70,11 +70,23 @@ def _format_snapshots_for_prompt(snapshots: Iterable[StockSnapshot]) -> str:
         if snapshot.change_6m is not None:
             line_parts.append(f"6M Δ={snapshot.change_6m:.2%}")
         
-        # Forecast trend (CRITICAL)
+        # Forecast trend (CRITICAL) – align wording with app thresholds
         forecast_slope = getattr(snapshot, "forecast_slope", None)
         if forecast_slope is not None:
-            trend = "BULLISH" if forecast_slope > 0 else "BEARISH"
-            line_parts.append(f"6M Forecast={forecast_slope:.2%} ({trend})")
+            if forecast_slope <= -0.03:
+                trend = "BEARISH"
+            elif forecast_slope < 0.03:
+                trend = "FLAT"
+            elif forecast_slope < 0.08:
+                trend = "BULLISH"
+            else:
+                trend = "STRONGLY BULLISH"
+            # Format forecast period label dynamically
+            if forecast_months < 12:
+                period_label = f"{forecast_months}M"
+            else:
+                period_label = f"{forecast_months // 12}Y"
+            line_parts.append(f"{period_label} Forecast={forecast_slope:.2%} ({trend})")
         
         # Technical indicators
         tech_parts = []
@@ -284,7 +296,7 @@ Recommendation: {market_mood.recommendation}"""
 
 
 def _build_prompt(
-    investment_horizon: int,
+    investment_horizon: int,  # Now in months
     invest_amount: float,
     strategy_notes: str,
     snapshots: Iterable[StockSnapshot],
@@ -336,16 +348,66 @@ Provide a JSON object `stock_evaluation` with:
 }}
 """
 
+    # Calculate forecast period: if horizon < 6 months, use horizon; otherwise use 6 months
+    forecast_months = investment_horizon if investment_horizon < 6 else 6
+    
+    # Format forecast period label
+    if forecast_months < 12:
+        forecast_label = f"{forecast_months}M"
+    else:
+        forecast_label = f"{forecast_months // 12}Y"
+    
+    # Format horizon appropriately
+    is_short_term = investment_horizon < 12
+    if is_short_term:
+        horizon_text = f"{investment_horizon} month{'s' if investment_horizon > 1 else ''}"
+        investment_style = "SHORT-TERM"
+        horizon_note = f"The investor aims to realize profits within {investment_horizon} month{'s' if investment_horizon > 1 else ''}. Focus on stocks with strong technical momentum, positive short-term catalysts, and the potential for quick price appreciation. Prioritize stocks with bullish near-term forecasts, favorable technical indicators (RSI, MACD, Golden Cross), and recent positive news that could drive price movement within this timeframe."
+        rules_section = f"""1. For SHORT-TERM investments (horizon < 12 months), prioritize:
+   - Strong technical momentum (bullish MACD, Golden Cross, RSI in favorable range 40-70)
+   - Positive near-term catalysts from recent news
+   - Bullish or STRONGLY BULLISH {forecast_label} Forecast (forecast_slope >= +0.03)
+   - Stocks with high volume activity (volume_ratio > 1.2) suggesting active interest
+   - AVOID stocks with BEARISH forecast, as they are unlikely to deliver profits within the short timeframe
+2. For SHORT-TERM: Technical indicators and momentum are PRIMARY; fundamentals are SECONDARY. Focus on stocks that can deliver quick price appreciation.
+3. Treat very small {forecast_label} forecast_slope values as NEUTRAL or only mildly positive, not bullish:
+   - If -0.03 < forecast_slope < +0.03 (i.e. between -3% and +3% over {forecast_months} month{'s' if forecast_months > 1 else ''}), describe the trend as "flat/sideways" or "muted", not "bullish" or "strong positive".
+   - When forecast_slope is in this flat range, explicitly mention the **limited upside** in the rationale (e.g., "{forecast_label} forecast is only +0.44%, effectively flat").
+   - Only use the word "bullish" for forecast_slope >= +0.03, and "strongly bullish" for forecast_slope >= +0.08.
+4. For SHORT-TERM: If a stock has BEARISH forecast, AVOID it completely unless there is strong technical breakout potential and positive news catalyst."""
+    else:
+        years = investment_horizon / 12
+        if years == int(years):
+            horizon_text = f"{int(years)} year{'s' if years > 1 else ''}"
+        else:
+            horizon_text = f"{years:.1f} year{'s' if years > 1 else ''}"
+        investment_style = "LONG-TERM"
+        horizon_note = f"The investor has a {horizon_text} investment horizon. Focus on fundamental value, sustainable growth, and long-term compounding potential. Consider P/E ratios, ROE, ROIC, debt levels, and consistent revenue/profit growth. Technical indicators are secondary to fundamental strength for long-term wealth building."
+        rules_section = f"""1. For LONG-TERM investments, prioritize:
+   - Strong fundamentals (ROE > 15%, ROIC > 10%, positive growth)
+   - Consistent revenue and profit growth
+   - Reasonable valuation (P/E < 25 for growth stocks, PEG < 1.5)
+   - Low debt levels and positive cash flow
+   - DO NOT recommend stocks with BEARISH {forecast_label} Forecast unless there are exceptional fundamental reasons AND the investor has a very long horizon (5+ years)
+2. For LONG-TERM: Fundamentals and valuation are PRIMARY; technical indicators are SECONDARY. Focus on stocks with sustainable competitive advantages.
+3. Treat very small {forecast_label} forecast_slope values as NEUTRAL or only mildly positive, not bullish:
+   - If -0.03 < forecast_slope < +0.03 (i.e. between -3% and +3% over {forecast_months} month{'s' if forecast_months > 1 else ''}), describe the trend as "flat/sideways" or "muted", not "bullish" or "strong positive".
+   - When forecast_slope is in this flat range, explicitly mention the **limited upside** in the rationale (e.g., "{forecast_label} forecast is only +0.44%, effectively flat").
+   - Only use the word "bullish" for forecast_slope >= +0.03, and "strongly bullish" for forecast_slope >= +0.08.
+4. For LONG-TERM: If a stock shows BEARISH forecast but strong fundamentals, mention this contradiction clearly in risks and consider lower allocation or waiting."""
+    
     return f"""
 You are an equity allocation assistant helping a retail investor in India.
 
 Investor context:
-- Investment horizon: {investment_horizon} years
+- Investment horizon: {horizon_text} ({investment_style} investment)
 - Investable amount: ₹{invest_amount:,.2f}
 - Strategy notes: {strategy_notes or 'None'}
 
+{horizon_note}
+
 Market snapshots:
-{_format_snapshots_for_prompt(snapshots)}
+{_format_snapshots_for_prompt(snapshots, forecast_months=forecast_months)}
 
 Recent news:
 {_format_news_for_prompt(news_map)}
@@ -357,9 +419,7 @@ Recent news:
 {evaluation_block}
 
 CRITICAL RULES:
-1. DO NOT recommend stocks with BEARISH 6M Forecast (negative forecast_slope) unless there are exceptional fundamental reasons AND the investor has a very long horizon (5+ years).
-2. Prioritize stocks with positive forecast trends, strong technical indicators (RSI not overbought, bullish MACD, Golden Cross), and solid fundamentals.
-3. If a stock shows BEARISH forecast but strong fundamentals, mention this contradiction clearly in risks and consider lower allocation or waiting.
+{rules_section}
 
 STOCK-BY-STOCK EVALUATION APPROACH:
 - EVALUATE EACH STOCK INDIVIDUALLY based on its own merits, not market-wide averages.
@@ -424,8 +484,9 @@ def _invoke_llm(prompt: str) -> str:
     client = _client()
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        temperature=0.2,
-        max_tokens=2000,  # Increased to handle detailed stock-by-stock analysis
+        temperature=0.0,  # Make outputs as deterministic as possible
+        seed=42,  # Fix a seed so identical prompts return identical outputs (best-effort)
+        max_tokens=2000,  # Allow detailed stock-by-stock analysis
         response_format={"type": "json_object"},
         messages=[
             {
@@ -444,7 +505,32 @@ def _invoke_llm(prompt: str) -> str:
     if not content:
         raise LLMServiceError("LLM returned empty response.")
 
-    return content
+    # Extract token usage information (best-effort; fields may differ by SDK version)
+    usage_dict: Dict[str, Any] | None = None
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        try:
+            # Newer SDKs: input_tokens / output_tokens / total_tokens
+            input_tokens = getattr(usage, "input_tokens", None)
+            output_tokens = getattr(usage, "output_tokens", None)
+            total_tokens = getattr(usage, "total_tokens", None)
+
+            # Fallback for older naming (prompt_tokens / completion_tokens)
+            if input_tokens is None:
+                input_tokens = getattr(usage, "prompt_tokens", None)
+            if output_tokens is None:
+                output_tokens = getattr(usage, "completion_tokens", None)
+
+            usage_dict = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+            }
+        except Exception:
+            usage_dict = None
+
+    # Return both the content and usage in a serializable wrapper
+    return json.dumps({"content": content, "usage": usage_dict}, default=str)
 
 
 def _parse_llm_json(raw: str, snapshots: Iterable[StockSnapshot]) -> LLMResult:
@@ -551,7 +637,7 @@ def llm_pick_and_allocate(
     evaluation_position: Optional[str] = None,
     evaluation_shares: Optional[int] = None,
     evaluation_lots: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[LLMResult, str]:
+) -> tuple[LLMResult, str, Optional[Dict[str, Any]]]:
     """Call the LLM to generate allocation suggestions.
 
     Returns the parsed `LLMResult` alongside the raw JSON string emitted by the model.
@@ -569,7 +655,18 @@ def llm_pick_and_allocate(
         evaluation_shares=evaluation_shares,
         evaluation_lots=evaluation_lots,
     )
-    raw_response = _invoke_llm(prompt)
+    wrapped = _invoke_llm(prompt)
+
+    # Unwrap content and usage from the JSON wrapper
+    try:
+        payload = json.loads(wrapped)
+        raw_response = payload.get("content", "")
+        usage = payload.get("usage")
+    except Exception:
+        # Fallback: treat entire string as raw response if wrapper parsing fails
+        raw_response = wrapped
+        usage = None
+
     parsed = _parse_llm_json(raw_response, snapshots)
-    return parsed, raw_response
+    return parsed, raw_response, usage
 

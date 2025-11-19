@@ -30,7 +30,13 @@ class RecommendationAgent(BaseAgent):
             fii_trend = context.get("fii_trend")
             market_mood = context.get("market_mood")
             
-            investment_horizon = context.get("horizon_years")
+            # Get horizon_months if available, otherwise convert horizon_years to months
+            investment_horizon = context.get("horizon_months")
+            if investment_horizon is None:
+                horizon_years = context.get("horizon_years")
+                if horizon_years:
+                    investment_horizon = int(horizon_years * 12)
+            
             invest_amount = context.get("invest_amount")
             strategy_notes = context.get("strategy_notes", "")
             
@@ -50,7 +56,7 @@ class RecommendationAgent(BaseAgent):
             }
             
             try:
-                llm_result, llm_raw = llm_pick_and_allocate(
+                llm_result, llm_raw, llm_usage = llm_pick_and_allocate(
                     investment_horizon=int(investment_horizon),
                     invest_amount=float(invest_amount),
                     strategy_notes=str(strategy_notes),
@@ -66,6 +72,7 @@ class RecommendationAgent(BaseAgent):
                 
                 result.add_data("llm_result", llm_result)
                 result.add_data("llm_raw", llm_raw)
+                result.add_data("llm_usage", llm_usage)
                 return result
                 
             except LLMServiceError as e:

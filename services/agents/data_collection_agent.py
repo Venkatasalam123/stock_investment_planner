@@ -80,12 +80,16 @@ class DataCollectionAgent(BaseAgent):
             
             # Fetch stock snapshots
             progress_callback = context.get("progress_callback")
+            # Use investment horizon for forecast: if < 6 months, use horizon; otherwise use 6 months
+            horizon_months = context.get("horizon_months", 6)
+            forecast_months = horizon_months if horizon_months < 6 else 6
             
             try:
                 snapshots, failures = fetch_snapshots(
                     symbol_pool,
                     max_workers=6,
                     progress_callback=progress_callback,
+                    forecast_months=forecast_months,
                 )
                 
                 if failures:

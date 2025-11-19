@@ -9,6 +9,9 @@ import streamlit as st
 from dotenv import load_dotenv
 import yfinance as yf
 
+# Load environment variables BEFORE importing modules that depend on them
+load_dotenv()
+
 MIN_SELL_PROFIT_ABS = 5000.0  # Minimum absolute profit (₹) to justify selling
 MIN_SELL_PROFIT_PCT = 0.05    # Minimum profit percentage to justify selling
 
@@ -30,13 +33,24 @@ from storage.database import (
     fetch_all_predictions,
     fetch_predictions_by_run_id,
     update_prediction_price,
-    delete_unknown_runs,
     update_prediction_action,
     PredictionTracking,
+    test_db_connection,
+    init_db,
 )
 
 
-load_dotenv()
+def _classify_forecast_trend(forecast_slope: float | None) -> str:
+    """Classify forecast trend based on slope."""
+    if forecast_slope is None:
+        return "UNKNOWN"
+    if forecast_slope <= -0.03:
+        return "BEARISH"
+    if forecast_slope < 0.03:
+        return "FLAT"
+    if forecast_slope < 0.08:
+        return "BULLISH"
+    return "STRONGLY BULLISH"
 
 st.set_page_config(
     page_title="Stock Investment AI Assistant",
@@ -277,13 +291,37 @@ def sidebar_inputs() -> Dict[str, Any]:
     st.sidebar.caption("Analyse an individual stock or screen a basket from your chosen market cap index, then proceed.")
     is_single_stock = analysis_mode == "Single Stock Focus"
 
-    horizon_years = st.sidebar.slider(
-        "Investment Horizon (years)",
-        min_value=1,
-        max_value=10,
-        value=5,
-        help="How long you plan to stay invested.",
+    horizon_unit = st.sidebar.radio(
+        "Investment Horizon Unit",
+        ("Months", "Years"),
+        index=1,  # Default to Years
+        horizontal=True,
+        help="Choose between short-term (months) or long-term (years) investment.",
     )
+    
+    if horizon_unit == "Months":
+        horizon_value = st.sidebar.slider(
+            "Investment Horizon",
+            min_value=1,
+            max_value=12,
+            value=12,
+            help="For short-term investments, focus is on profit within this timeframe.",
+        )
+        horizon_months = horizon_value
+        horizon_display = f"{horizon_value} month{'s' if horizon_value > 1 else ''}"
+    else:
+        horizon_value = st.sidebar.slider(
+            "Investment Horizon",
+            min_value=1,
+            max_value=20,
+            value=10,
+            help="How long you plan to stay invested. Long-term focus is on growth and compounding.",
+        )
+        horizon_months = horizon_value * 12
+        horizon_display = f"{horizon_value} year{'s' if horizon_value > 1 else ''}"
+    
+    # Store both for backward compatibility and clarity
+    horizon_years = horizon_months / 12 if horizon_months >= 12 else 0
 
     index_choice: Optional[str] = None
     selected_symbol: Optional[str] = None
@@ -317,7 +355,7 @@ def sidebar_inputs() -> Dict[str, Any]:
 
     strategy_notes = st.sidebar.text_area(
         "Additional Strategy Notes",
-        value="",
+        value="Long term investment",
         help="Any preferences or constraints you'd like the assistant to consider.",
     )
 
@@ -385,6 +423,8 @@ def sidebar_inputs() -> Dict[str, Any]:
         "index_choice": index_choice,
         "selected_symbol": selected_symbol,
         "horizon_years": horizon_years,
+        "horizon_months": horizon_months,
+        "horizon_display": horizon_display,
         "invest_amount": invest_amount,
         "strategy_notes": strategy_notes,
         "evaluation_symbol": evaluation_symbol,
@@ -417,7 +457,7 @@ def render_intro(is_agentic: bool = False) -> None:
         📊 **Market Basket** - Screen stocks from major indices
         🎯 **Single Stock Focus** - Analyze individual stocks
         📰 **News & Sentiment** - Market headlines & mood indicators
-        💡 **AI Recommendations** - Buy/sell guidance with 6M forecasts
+        💡 **AI Recommendations** - Buy/sell guidance with dynamic forecasts
         
         **Usage:** Configure sidebar → Choose mode → Run Analysis
         """
@@ -460,7 +500,8 @@ def show_snapshot_table(snapshots: List[StockSnapshot]) -> None:
                 "Company": snapshot.short_name,
                 "1M Change": snapshot.change_1m,
                 "6M Change": snapshot.change_6m,
-                "Forecast 6M": snapshot.forecast_slope,
+                "Forecast": snapshot.forecast_slope,
+                "Forecast Trend": _classify_forecast_trend(snapshot.forecast_slope),
                 "Beta": snapshot.beta,
                 "Volatility": snapshot.volatility,
                 "Max Drawdown": snapshot.max_drawdown,
@@ -479,7 +520,7 @@ def show_snapshot_table(snapshots: List[StockSnapshot]) -> None:
                 {
                     "1M Change": "{:.2%}",
                     "6M Change": "{:.2%}",
-                    "Forecast 6M": "{:.2%}",
+                    "Forecast": "{:.2%}",
                     "Beta": "{:.2f}",
                     "Volatility": "{:.2%}",
                     "Max Drawdown": "{:.2%}",
@@ -835,7 +876,7 @@ def show_llm_recommendations(result, snapshots: List[StockSnapshot], compact: bo
                         bearish_count = sum(1 for f in forecast_values if f < 0)
                         avg_forecast = sum(forecast_values) / len(forecast_values)
                         st.metric("Forecast Trend", f"{avg_forecast:.2%} average",
-                                help=f"{bearish_count}/{len(forecast_values)} stocks show bearish 6M forecasts")
+                                help=f"{bearish_count}/{len(forecast_values)} stocks show bearish forecasts")
                 
                 if any(keyword in guidance_lower for keyword in ["beta", "volatility"]):
                     # Calculate and show beta/volatility
@@ -892,7 +933,7 @@ def show_llm_recommendations(result, snapshots: List[StockSnapshot], compact: bo
                     continue
                 tech_summary_data.append({
                     "Symbol": allocation.symbol,
-                    "Forecast 6M": snapshot.forecast_slope,
+                    "Forecast": snapshot.forecast_slope,
                     "RSI (14)": snapshot.rsi_14,
                     "50DMA vs 200DMA": (
                         "Golden Cross" if snapshot.moving_average_50 and snapshot.moving_average_200 
@@ -916,7 +957,7 @@ def show_llm_recommendations(result, snapshots: List[StockSnapshot], compact: bo
                     st.dataframe(
                         tech_df.style.format(
                             {
-                                "Forecast 6M": "{:.2%}",
+                                "Forecast": "{:.2%}",
                                 "RSI (14)": "{:.1f}",
                                 "Volume Ratio": "{:.2f}",
                                 "Dist from 52W High": "{:.2%}",
@@ -1039,10 +1080,21 @@ def show_price_charts(result, snapshots: List[StockSnapshot], is_single_stock: b
                 history_tail = history_df.tail(130)
                 
                 forecast_slope = getattr(snapshot, "forecast_slope", None)
-                forecast_color = "green" if forecast_slope and forecast_slope > 0 else "red"
-                forecast_title = f"{allocation.symbol} – Last 6 Months Price & Forecast"
+                trend_text = _classify_forecast_trend(forecast_slope)
+                forecast_color = "green" if trend_text in ("BULLISH", "STRONGLY BULLISH") else "red"
+                
+                # Calculate forecast period from forecast DataFrame
+                forecast_period = "6M"
+                if snapshot.forecast is not None and not snapshot.forecast.empty:
+                    forecast_days = len(snapshot.forecast)
+                    forecast_months = round(forecast_days / 21)  # Approximate trading days per month
+                    if forecast_months < 12:
+                        forecast_period = f"{forecast_months}M"
+                    else:
+                        forecast_period = f"{forecast_months // 12}Y"
+                
+                forecast_title = f"{allocation.symbol} – Price History & {forecast_period} Forecast"
                 if forecast_slope is not None:
-                    trend_text = "BULLISH" if forecast_slope > 0 else "BEARISH"
                     forecast_title += f" ({trend_text}: {forecast_slope:.2%})"
                 
                 fig = px.line(history_tail, x="date", y="Close", title=forecast_title)
@@ -1051,7 +1103,7 @@ def show_price_charts(result, snapshots: List[StockSnapshot], is_single_stock: b
                         x=snapshot.forecast["date"],
                         y=snapshot.forecast["forecast"],
                         mode="lines",
-                        name="Forecast (6M)",
+                        name=f"Forecast ({forecast_period})",
                         line=dict(dash="dash", color=forecast_color),
                     )
                 
@@ -1100,12 +1152,23 @@ def show_price_charts(result, snapshots: List[StockSnapshot], is_single_stock: b
                     history_df.reset_index(inplace=True)
                 if "date" in history_df.columns:
                     history_df = history_df.tail(180)
-                    fig_eval = px.line(history_df, x="date", y="Close", title=f"{symbol} – Historical & Forecasted Prices")
+                    
+                    # Calculate forecast period from forecast DataFrame
+                    forecast_period = "6M"
+                    if snapshot.forecast is not None and not snapshot.forecast.empty:
+                        forecast_days = len(snapshot.forecast)
+                        forecast_months = round(forecast_days / 21)  # Approximate trading days per month
+                        if forecast_months < 12:
+                            forecast_period = f"{forecast_months}M"
+                        else:
+                            forecast_period = f"{forecast_months // 12}Y"
+                    
+                    fig_eval = px.line(history_df, x="date", y="Close", title=f"{symbol} – Historical & {forecast_period} Forecast")
                     fig_eval.add_scatter(
                         x=snapshot.forecast["date"],
                         y=snapshot.forecast["forecast"],
                         mode="lines",
-                        name="Forecast (6M)",
+                        name=f"Forecast ({forecast_period})",
                         line=dict(dash="dash", color="blue"),
                     )
                     st.plotly_chart(fig_eval, use_container_width=True)
@@ -1119,7 +1182,16 @@ def show_run_details(run) -> None:
     # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Horizon", f"{run.horizon_years} years")
+        # Display horizon in appropriate unit
+        if hasattr(run, 'horizon_months') and run.horizon_months:
+            if run.horizon_months < 12:
+                horizon_text = f"{run.horizon_months} month{'s' if run.horizon_months > 1 else ''}"
+            else:
+                horizon_years = run.horizon_months / 12
+                horizon_text = f"{horizon_years:.1f} year{'s' if horizon_years != 1 else ''}" if horizon_years % 1 != 0 else f"{int(horizon_years)} year{'s' if horizon_years != 1 else ''}"
+        else:
+            horizon_text = f"{run.horizon_years} year{'s' if run.horizon_years != 1 else ''}"
+        st.metric("Horizon", horizon_text)
     with col2:
         st.metric("Universe", run.stock_universe)
     with col3:
@@ -1189,20 +1261,20 @@ def show_run_details(run) -> None:
 
 
 def show_recent_runs() -> None:
-    # Count unknown runs
-    runs = fetch_recent_runs(limit=1000)  # Get more to count unknown
-    unknown_count = sum(1 for run in runs if run.universe_name is None)
-    runs = runs[:10]  # Limit for display
+    # Test and display database connection status
+    conn_success, conn_msg = test_db_connection()
+    if not conn_success:
+        st.error(conn_msg)
+        st.warning("⚠️ Database connection failed. Runs may not be saved. Check your DATABASE_URL in .env or Streamlit Cloud secrets.")
+        return
+    # Initialize database tables if needed
+    try:
+        init_db()
+    except Exception as exc:
+        st.error(f"⚠️ Database initialization error: {exc}")
     
-    # Add button to delete unknown runs if any exist
-    if unknown_count > 0:
-        st.warning(f"⚠️ Found {unknown_count} run(s) with 'Unknown' universe_name.")
-        if st.button("🗑️ Delete All Unknown Runs", type="secondary", key="delete_unknown_runs"):
-            deleted_count = delete_unknown_runs()
-            if deleted_count > 0:
-                st.success(f"✅ Successfully deleted {deleted_count} unknown run(s).")
-                st.rerun()
-        st.markdown("---")
+    # Fetch recent runs (limited to last 10 for display)
+    runs = fetch_recent_runs(limit=10)
     
     if not runs:
         st.info("No previous runs found. Run an analysis to get started.")
@@ -1212,7 +1284,7 @@ def show_recent_runs() -> None:
     data = [
         {
             "Timestamp": run.created_at.strftime("%Y-%m-%d %H:%M"),
-            "Horizon": run.horizon_years,
+            "Horizon": f"{run.horizon_months} months" if hasattr(run, 'horizon_months') and run.horizon_months else f"{run.horizon_years} years",
             "Stocks": run.stock_universe,
             "Amount": f"₹{run.invest_amount:,.0f}",
             "Suggestions": len(run.suggestions),
@@ -1315,10 +1387,15 @@ def run_pipeline(inputs: Dict[str, Any]) -> None:
         fundamentals_progress.info(f"Fetching fundamentals… ({done}/{total}) – latest: {symbol}")
     
     try:
+        # Use investment horizon for forecast: if < 6 months, use horizon; otherwise use 6 months
+        horizon_months = inputs.get("horizon_months", 6)
+        forecast_months = horizon_months if horizon_months < 6 else 6
+        
         snapshots, failures = fetch_snapshots(
             symbol_pool,
             max_workers=6,  # Reduced to help with rate limiting
             progress_callback=update_fundamentals_progress,
+            forecast_months=forecast_months,
         )
     except Exception as exc:  # noqa: BLE001
         progress.empty()
@@ -1446,8 +1523,8 @@ def run_pipeline(inputs: Dict[str, Any]) -> None:
     step_placeholder.info("Requesting LLM allocation guidance…")
     try:
         llm_news_map = {snap.symbol: news_map.get(snap.symbol, []) for snap in llm_snapshots}
-        llm_result, llm_raw = llm_pick_and_allocate(
-            investment_horizon=int(inputs["horizon_years"]),
+        llm_result, llm_raw, llm_usage = llm_pick_and_allocate(
+            investment_horizon=int(inputs["horizon_months"]),
             invest_amount=float(inputs["invest_amount"]),
             strategy_notes=str(inputs["strategy_notes"]),
             snapshots=llm_snapshots,
@@ -1469,6 +1546,19 @@ def run_pipeline(inputs: Dict[str, Any]) -> None:
         return
     advance("LLM guidance received.")
 
+    # Show LLM token usage (if available)
+    try:
+        if llm_usage:
+            input_tokens = llm_usage.get("input_tokens")
+            output_tokens = llm_usage.get("output_tokens")
+            total_tokens = llm_usage.get("total_tokens")
+            st.caption(
+                f"LLM tokens – input: {input_tokens}, output: {output_tokens}, total: {total_tokens}"
+            )
+    except Exception:
+        # Best-effort only; never break the UI if usage payload is unexpected.
+        pass
+
     if enriched_purchase_lots:
         formatted_summary = {
             "latest_close": lot_summary.get("latest_close"),
@@ -1486,9 +1576,26 @@ def run_pipeline(inputs: Dict[str, Any]) -> None:
         llm_result.evaluation.setdefault("lot_summary", formatted_summary)
 
     step_placeholder.info("Saving run to database…")
+    
+    # Test connection before saving
+    conn_success, conn_msg = test_db_connection()
+    if not conn_success:
+        st.error(f"❌ Cannot save run: {conn_msg}")
+        step_placeholder.error(f"Database connection failed: {conn_msg}")
+        return
+    
+    # Initialize database if needed
+    try:
+        init_db()
+    except Exception as exc:
+        st.error(f"⚠️ Database initialization error: {exc}")
+        step_placeholder.error(f"Failed to initialize database: {exc}")
+        return
+    
     try:
         run_id = log_run(
             horizon_years=int(inputs["horizon_years"]),
+            horizon_months=int(inputs["horizon_months"]),
             stock_universe=len(symbol_pool),
             invest_amount=float(inputs["invest_amount"]),
             strategy_notes=str(inputs["strategy_notes"]),
@@ -1502,19 +1609,22 @@ def run_pipeline(inputs: Dict[str, Any]) -> None:
             market_mood=market_mood,
             stock_evaluation=llm_result.evaluation,
         )
+        st.success(f"✅ {conn_msg}")
+        st.success(f"💾 Run saved successfully with ID: {run_id[:8]}...")
+        print(f"💾 Run saved successfully with ID: {run_id}")
     except Exception as exc:  # noqa: BLE001
-        st.toast(f"⚠️ Failed to persist run: {str(exc)[:50]}...", icon="⚠️")
+        error_msg = str(exc)
+        st.error(f"❌ Failed to persist run: {error_msg}")
+        st.exception(exc)  # Show full traceback for debugging
         run_id = None
-    else:
-        st.toast("💾 Run saved to database", icon="💾")
     advance("Run saved.")
 
     progress.empty()
     step_placeholder.empty()
-    st.toast("✅ Analysis complete!", icon="✅")
+    st.success("✅ Analysis complete!")
 
     if run_id:
-        st.toast(f"✅ Run logged successfully with ID {run_id[:8]}...", icon="✅")
+        st.info(f"✅ Run logged successfully with ID: {run_id[:8]}...")
 
     # Organize results into tabs
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary & Recommendations", "📈 Market Data", "📰 News & Analysis", "📉 Charts & Forecasts"])
@@ -1623,15 +1733,13 @@ def show_performance_tracking() -> None:
                                 "pe": info.get("trailingPE"),
                                 "peg": info.get("pegRatio"),
                                 "roe": info.get("returnOnEquity"),
-                                "roic": None,  # Will need to calculate from financials if needed
+                                "roic": None,  # Placeholder for future ROIC calc
                                 "debt_to_equity": info.get("debtToEquity"),
-                                "interest_coverage": None,  # Will need to calculate if needed
-                                "revenue_growth": None,  # Will need to calculate if needed
-                                "profit_growth": None,  # Will need to calculate if needed
+                                "interest_coverage": None,  # Placeholder
+                                "revenue_growth": None,      # Placeholder
+                                "profit_growth": None,       # Placeholder
                                 "beta": info.get("beta"),
                             }
-                            # Get ROIC if available (would need to calculate from financials/balance sheet)
-                            # For now, we'll use what's available from info
                         except Exception:
                             current_metrics = None
                     
@@ -1650,7 +1758,6 @@ def show_performance_tracking() -> None:
                 st.toast(f"✅ Updated {updated_count} price(s).", icon="✅")
             if error_count > 0:
                 st.toast(f"⚠️ Failed to update {error_count} price(s).", icon="⚠️")
-            st.rerun()
     
     # Refresh predictions after update
     predictions = fetch_predictions_by_run_id(selected_run_id)

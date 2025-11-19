@@ -5,16 +5,12 @@ This version uses an agentic architecture where different agents handle
 different aspects of the investment analysis workflow.
 """
 
-import os
-import sys
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
-
-import pandas as pd
-import plotly.express as px
+from typing import Any, Dict, List, Optional
 import streamlit as st
 from dotenv import load_dotenv
-import yfinance as yf
+
+# Load environment variables BEFORE importing modules that depend on them
+load_dotenv()
 
 # Import app module and force reload to avoid caching issues
 import app
@@ -44,14 +40,7 @@ from services.agents import CoordinatorAgent
 from services.core.market_data import StockSnapshot
 from services.core.market_mood import MarketMood
 from services.core.news import NewsItem
-from services.core.nse import AVAILABLE_INDICES
-from storage.database import (
-    fetch_recent_runs,
-    fetch_run_by_id,
-    log_run,
-)
-
-load_dotenv()
+from storage.database import log_run
 
 st.set_page_config(
     page_title="Stock Investment AI Assistant (Agents)",
@@ -138,6 +127,7 @@ def run_agentic_pipeline(inputs: Dict[str, Any]) -> None:
             "purchase_lots": purchase_lots,
             "shares_owned": shares_owned,
             "horizon_years": int(inputs["horizon_years"]),
+            "horizon_months": int(inputs["horizon_months"]),
             "invest_amount": float(inputs["invest_amount"]),
             "strategy_notes": str(inputs.get("strategy_notes", "")),
             "progress_callback": update_progress,
@@ -170,6 +160,7 @@ def run_agentic_pipeline(inputs: Dict[str, Any]) -> None:
         llm_snapshots: List[StockSnapshot] = result.get_data("llm_snapshots", snapshots)
         llm_result = result.get_data("llm_result")
         llm_raw = result.get_data("llm_raw")
+        llm_usage = result.get_data("llm_usage")
         
         # Handle purchase lots enrichment if needed (after agent execution to avoid circular imports)
         enriched_purchase_lots: List[Dict[str, Any]] = []
@@ -268,6 +259,7 @@ def run_agentic_pipeline(inputs: Dict[str, Any]) -> None:
         try:
             run_id = log_run(
                 horizon_years=int(inputs["horizon_years"]),
+                horizon_months=int(inputs["horizon_months"]),
                 stock_universe=len(symbol_pool) if symbol_pool else 0,
                 invest_amount=float(inputs["invest_amount"]),
                 strategy_notes=str(inputs.get("strategy_notes", "")),
@@ -306,6 +298,17 @@ def run_agentic_pipeline(inputs: Dict[str, Any]) -> None:
         
         with tab1:
             show_market_mood(market_mood)
+            # Show LLM token usage if available
+            try:
+                if llm_usage:
+                    input_tokens = llm_usage.get("input_tokens")
+                    output_tokens = llm_usage.get("output_tokens")
+                    total_tokens = llm_usage.get("total_tokens")
+                    st.caption(
+                        f"LLM tokens – input: {input_tokens}, output: {output_tokens}, total: {total_tokens}"
+                    )
+            except Exception:
+                pass
             if enriched_purchase_lots:
                 with st.expander("💼 Your Purchase History", expanded=True):
                     show_purchase_history(enriched_purchase_lots, lot_summary)

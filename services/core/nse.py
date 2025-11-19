@@ -67,7 +67,17 @@ INDEX_CSV_MAP = {
         "https://www.bseindia.com/corporates/List_Scrips.aspx",
     ],
 }
-AVAILABLE_INDICES = list(INDEX_CSV_MAP.keys())
+
+# Only expose indices that are fully supported and stable in the UI.
+# Back-end helpers can still use INDEX_CSV_MAP directly if needed.
+AVAILABLE_INDICES = [
+    "NIFTY 50",
+    "NIFTY NEXT 50",
+    "NIFTY 100",
+    "NIFTY 200",
+    "NIFTY 500",
+    "BSE SENSEX",
+]
 
 DEFAULT_HEADERS = {
     "User-Agent": (

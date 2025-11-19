@@ -5,9 +5,11 @@ numpy>=1.26.0
 yfinance>=0.2.40
 openai>=1.40.0
 sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
 python-dotenv>=1.0.1
 tenacity>=8.2.3
 plotly>=5.22.0
 feedparser>=6.0.10
 pandas-ta>=0.3.14b0
+scikit-learn>=1.6.1
 

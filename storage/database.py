@@ -8,8 +8,10 @@ import pathlib
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus, urlparse, urlunparse
 
 import pandas as pd
+from dotenv import load_dotenv
 from sqlalchemy import DateTime, Float, ForeignKey, String, Text, create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy import inspect
@@ -20,8 +22,63 @@ from services.core.market_mood import MarketMood
 from services.core.news import NewsItem
 from services.core.llm import LLMResult
 
+# Ensure .env is loaded even when this module is imported directly
+load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///data/app.db")
+def _normalize_database_url(url: str) -> str:
+    """Normalize database URL, ensuring password is properly encoded."""
+    if not url or url.startswith("sqlite"):
+        return url
+    
+    try:
+        parsed = urlparse(url)
+        if parsed.password:
+            encoded_password = quote_plus(parsed.password)
+            netloc = f"{parsed.username}:{encoded_password}@{parsed.hostname}"
+            if parsed.port:
+                netloc += f":{parsed.port}"
+            normalized = urlunparse((
+                parsed.scheme,
+                netloc,
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment
+            ))
+            return normalized
+    except Exception:
+        pass
+    
+    return url
+
+
+def _resolve_database_url() -> str:
+    """
+    Decide which database URL to use.
+    - Local/default: sqlite (or LOCAL_DATABASE_URL if provided)
+    - Cloud/production: DATABASE_URL (Neon/Postgres)
+    
+    Use APP_ENV (or ENV) to detect cloud deployments.
+    """
+    app_env = (os.getenv("APP_ENV") or os.getenv("ENV") or "").lower()
+    local_url = os.getenv("LOCAL_DATABASE_URL")
+    default_sqlite = "sqlite:///data/app.db"
+    
+    if app_env in {"cloud", "prod", "production", "streamlit"}:
+        cloud_url = os.getenv("DATABASE_URL")
+        if not cloud_url:
+            raise RuntimeError("DATABASE_URL must be provided when APP_ENV is set to 'cloud'.")
+        return _normalize_database_url(cloud_url)
+    
+    # Local/dev: prefer LOCAL_DATABASE_URL, else DATABASE_URL, else sqlite
+    if local_url:
+        return _normalize_database_url(local_url)
+    
+    fallback = os.getenv("DATABASE_URL", default_sqlite)
+    return _normalize_database_url(fallback)
+
+
+DATABASE_URL = _resolve_database_url()
 
 
 def _ensure_sqlite_directory(url: str) -> None:
@@ -41,6 +98,7 @@ class RunRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     horizon_years: Mapped[int] = mapped_column()
+    horizon_months: Mapped[int] = mapped_column(nullable=True)  # New field for months-based horizon
     stock_universe: Mapped[int] = mapped_column()
     invest_amount: Mapped[float] = mapped_column(Float)
     strategy_notes: Mapped[str] = mapped_column(Text, default="")
@@ -130,38 +188,77 @@ engine: Engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
+def test_db_connection() -> tuple[bool, str]:
+    """Test database connection and return (success, message)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_type = "PostgreSQL (Neon)" if "postgresql" in DATABASE_URL.lower() else "SQLite"
+        # Mask password in URL for display
+        masked_url = DATABASE_URL
+        if "@" in masked_url and ":" in masked_url.split("@")[0]:
+            user_pass, rest = masked_url.split("@", 1)
+            if ":" in user_pass:
+                user, _ = user_pass.split(":", 1)
+                masked_url = f"{user}:***@{rest}"
+        return True, f"✅ Connected to {db_type}: {masked_url}"
+    except Exception as exc:
+        return False, f"❌ Connection failed: {str(exc)}"
+
+
 def init_db() -> None:
-    Base.metadata.create_all(engine)
-    _ensure_additional_columns()
+    """Initialize database tables."""
+    try:
+        Base.metadata.create_all(engine)
+        _ensure_additional_columns()
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialize database: {exc}") from exc
 
 
 def _ensure_additional_columns() -> None:
+    """Add missing columns to existing tables (for migrations)."""
     inspector = inspect(engine)
     if not inspector.has_table("runs"):
         return
 
     existing_columns = {col["name"] for col in inspector.get_columns("runs")}
     statements = []
+    
+    # Use database-agnostic types (SQLAlchemy will translate)
+    is_postgres = "postgresql" in DATABASE_URL.lower()
 
     if "universe_name" not in existing_columns:
-        statements.append("ALTER TABLE runs ADD COLUMN universe_name VARCHAR")
+        col_type = "VARCHAR" if not is_postgres else "VARCHAR(255)"
+        statements.append(f"ALTER TABLE runs ADD COLUMN universe_name {col_type}")
     if "custom_symbols_blob" not in existing_columns:
         statements.append("ALTER TABLE runs ADD COLUMN custom_symbols_blob TEXT")
     if "market_mood_index" not in existing_columns:
-        statements.append("ALTER TABLE runs ADD COLUMN market_mood_index FLOAT")
+        col_type = "FLOAT" if not is_postgres else "DOUBLE PRECISION"
+        statements.append(f"ALTER TABLE runs ADD COLUMN market_mood_index {col_type}")
     if "market_mood_sentiment" not in existing_columns:
-        statements.append("ALTER TABLE runs ADD COLUMN market_mood_sentiment VARCHAR")
+        col_type = "VARCHAR" if not is_postgres else "VARCHAR(50)"
+        statements.append(f"ALTER TABLE runs ADD COLUMN market_mood_sentiment {col_type}")
     if "market_mood_description" not in existing_columns:
         statements.append("ALTER TABLE runs ADD COLUMN market_mood_description TEXT")
     if "market_mood_recommendation" not in existing_columns:
         statements.append("ALTER TABLE runs ADD COLUMN market_mood_recommendation TEXT")
     if "stock_evaluation_blob" not in existing_columns:
         statements.append("ALTER TABLE runs ADD COLUMN stock_evaluation_blob TEXT")
+    if "horizon_months" not in existing_columns:
+        col_type = "INTEGER" if not is_postgres else "INTEGER"
+        statements.append(f"ALTER TABLE runs ADD COLUMN horizon_months {col_type}")
+        # Migrate existing data: set horizon_months = horizon_years * 12
+        if "horizon_years" in existing_columns:
+            statements.append("UPDATE runs SET horizon_months = horizon_years * 12 WHERE horizon_months IS NULL")
 
     if statements:
-        with engine.begin() as connection:
-            for stmt in statements:
-                connection.execute(text(stmt))
+        try:
+            with engine.begin() as connection:
+                for stmt in statements:
+                    connection.execute(text(stmt))
+        except Exception as exc:
+            # Log but don't fail - columns might already exist or be incompatible
+            print(f"Warning: Could not add some columns: {exc}")
     
     # Ensure additional columns for prediction_tracking table
     if not inspector.has_table("prediction_tracking"):
@@ -169,6 +266,9 @@ def _ensure_additional_columns() -> None:
     
     pred_columns = {col["name"] for col in inspector.get_columns("prediction_tracking")}
     pred_statements = []
+    
+    # Use database-agnostic types
+    is_postgres = "postgresql" in DATABASE_URL.lower()
     
     # Fundamental metrics at suggestion time
     for col_name in [
@@ -183,14 +283,20 @@ def _ensure_additional_columns() -> None:
     ]:
         if col_name not in pred_columns:
             if col_name == "current_metrics_updated_at":
-                pred_statements.append(f"ALTER TABLE prediction_tracking ADD COLUMN {col_name} DATETIME")
+                col_type = "DATETIME" if not is_postgres else "TIMESTAMP"
+                pred_statements.append(f"ALTER TABLE prediction_tracking ADD COLUMN {col_name} {col_type}")
             else:
-                pred_statements.append(f"ALTER TABLE prediction_tracking ADD COLUMN {col_name} FLOAT")
+                col_type = "FLOAT" if not is_postgres else "DOUBLE PRECISION"
+                pred_statements.append(f"ALTER TABLE prediction_tracking ADD COLUMN {col_name} {col_type}")
     
     if pred_statements:
-        with engine.begin() as connection:
-            for stmt in pred_statements:
-                connection.execute(text(stmt))
+        try:
+            with engine.begin() as connection:
+                for stmt in pred_statements:
+                    connection.execute(text(stmt))
+        except Exception as exc:
+            # Log but don't fail - columns might already exist or be incompatible
+            print(f"Warning: Could not add some prediction_tracking columns: {exc}")
 
 
 def _serialize_snapshots(snapshots: List[StockSnapshot]) -> str:
@@ -315,6 +421,16 @@ def _deserialize_evaluation(blob: Optional[str]) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    """Convert numeric values (including numpy types) to Python floats."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def log_run(
     horizon_years: int,
     stock_universe: int,
@@ -329,14 +445,19 @@ def log_run(
     custom_symbols: Optional[List[str]] = None,
     market_mood: Optional[MarketMood] = None,
     stock_evaluation: Optional[Dict[str, Any]] = None,
+    horizon_months: Optional[int] = None,
 ) -> str:
     """Persist a completed app run and return the run ID."""
     init_db()
     run_id = str(uuid.uuid4())
     evaluation_payload = stock_evaluation or llm_result.evaluation
+    # Compute horizon_months if not provided (backward compatibility)
+    if horizon_months is None:
+        horizon_months = int(horizon_years * 12)
     run_record = RunRecord(
         id=run_id,
         horizon_years=horizon_years,
+        horizon_months=horizon_months,
         stock_universe=stock_universe,
         invest_amount=invest_amount,
         strategy_notes=strategy_notes or "",
@@ -348,7 +469,7 @@ def log_run(
         fii_blob=_serialize_fii_trend(fii_trend),
         universe_name=universe_name,
         custom_symbols_blob=_serialize_custom_symbols(custom_symbols),
-        market_mood_index=market_mood.index if market_mood else None,
+        market_mood_index=_safe_float(market_mood.index) if market_mood else None,
         market_mood_sentiment=market_mood.sentiment if market_mood else None,
         market_mood_description=market_mood.description if market_mood else None,
         market_mood_recommendation=market_mood.recommendation if market_mood else None,
@@ -374,19 +495,19 @@ def log_run(
                 # Get latest price from price_history if available
                 if snapshot.price_history is not None and not snapshot.price_history.empty:
                     if "Close" in snapshot.price_history.columns:
-                        suggested_price = float(snapshot.price_history["Close"].iloc[-1])
+                        suggested_price = _safe_float(snapshot.price_history["Close"].iloc[-1])
                 
                 # Extract fundamental metrics at suggestion time
                 suggested_metrics = {
-                    "suggested_pe": snapshot.fundamentals.get("trailingPE"),
-                    "suggested_peg": snapshot.peg_ratio,
-                    "suggested_roe": snapshot.fundamentals.get("returnOnEquity"),
-                    "suggested_roic": snapshot.roic,
-                    "suggested_debt_to_equity": snapshot.fundamentals.get("debtToEquity"),
-                    "suggested_interest_coverage": snapshot.interest_coverage,
-                    "suggested_revenue_growth": snapshot.revenue_growth_yoy,
-                    "suggested_profit_growth": snapshot.profit_growth_yoy,
-                    "suggested_beta": snapshot.beta,
+                    "suggested_pe": _safe_float(snapshot.fundamentals.get("trailingPE")),
+                    "suggested_peg": _safe_float(snapshot.peg_ratio),
+                    "suggested_roe": _safe_float(snapshot.fundamentals.get("returnOnEquity")),
+                    "suggested_roic": _safe_float(snapshot.roic),
+                    "suggested_debt_to_equity": _safe_float(snapshot.fundamentals.get("debtToEquity")),
+                    "suggested_interest_coverage": _safe_float(snapshot.interest_coverage),
+                    "suggested_revenue_growth": _safe_float(snapshot.revenue_growth_yoy),
+                    "suggested_profit_growth": _safe_float(snapshot.profit_growth_yoy),
+                    "suggested_beta": _safe_float(snapshot.beta),
                 }
                 break
         
@@ -407,6 +528,12 @@ def log_run(
     with SessionLocal() as session:
         session.add(run_record)
         session.commit()
+        # Verify the record was saved
+        saved = session.query(RunRecord).filter(RunRecord.id == run_id).first()
+        if saved:
+            print(f"✅ Run {run_id[:8]}... saved successfully to database")
+        else:
+            print(f"⚠️ Warning: Run {run_id[:8]}... commit succeeded but record not found immediately")
 
     return run_id
 
@@ -414,13 +541,24 @@ def log_run(
 def fetch_recent_runs(limit: int = 10) -> List[RunRecord]:
     init_db()
     with SessionLocal() as session:
-        return (
+        # First, check total count
+        total_count = session.query(RunRecord).count()
+        print(f"📊 Total runs in database: {total_count}")
+        
+        runs = (
             session.query(RunRecord)
             .options(selectinload(RunRecord.suggestions), selectinload(RunRecord.predictions))
             .order_by(RunRecord.created_at.desc())
             .limit(limit)
             .all()
         )
+        
+        print(f"📊 Fetched {len(runs)} recent run(s) (limit={limit})")
+        if runs:
+            for run in runs[:3]:  # Print first 3 for debugging
+                print(f"  - Run {run.id[:8]}... created at {run.created_at}, universe: {run.universe_name}")
+        
+        return runs
 
 
 def fetch_run_by_id(run_id: str) -> Optional[RunRecord]:
@@ -458,9 +596,12 @@ def fetch_all_predictions(limit: Optional[int] = None) -> List[PredictionTrackin
 
 
 def update_prediction_price(
-    prediction_id: int, current_price: float, return_pct: Optional[float] = None
+    prediction_id: int,
+    current_price: float,
+    return_pct: Optional[float] = None,
+    current_metrics: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """Update the current price for a prediction tracking record."""
+    """Update the current price (and optionally current fundamentals) for a prediction tracking record."""
     init_db()
     with SessionLocal() as session:
         prediction = session.query(PredictionTracking).filter(
@@ -469,8 +610,9 @@ def update_prediction_price(
         if not prediction:
             return False
         
+        now = datetime.utcnow()
         prediction.current_price = current_price
-        prediction.current_price_updated_at = datetime.utcnow()
+        prediction.current_price_updated_at = now
         
         # Calculate days since suggestion
         if prediction.suggested_date:
@@ -482,6 +624,19 @@ def update_prediction_price(
             prediction.return_pct = (current_price - prediction.suggested_price) / prediction.suggested_price
         elif return_pct is not None:
             prediction.return_pct = return_pct
+
+        # Optionally update current fundamental metrics snapshot
+        if current_metrics:
+            prediction.current_pe = current_metrics.get("pe")
+            prediction.current_peg = current_metrics.get("peg")
+            prediction.current_roe = current_metrics.get("roe")
+            prediction.current_roic = current_metrics.get("roic")
+            prediction.current_debt_to_equity = current_metrics.get("debt_to_equity")
+            prediction.current_interest_coverage = current_metrics.get("interest_coverage")
+            prediction.current_revenue_growth = current_metrics.get("revenue_growth")
+            prediction.current_profit_growth = current_metrics.get("profit_growth")
+            prediction.current_beta = current_metrics.get("beta")
+            prediction.current_metrics_updated_at = now
         
         session.commit()
         return True
@@ -515,23 +670,5 @@ def fetch_predictions_by_run_id(run_id: str) -> List[PredictionTracking]:
 
 
 def delete_unknown_runs() -> int:
-    """Delete all runs where universe_name is None (displayed as 'Unknown').
-    
-    Returns:
-        Number of runs deleted.
-    """
-    init_db()
-    with SessionLocal() as session:
-        # Find all runs with universe_name as None
-        unknown_runs = session.query(RunRecord).filter(
-            RunRecord.universe_name.is_(None)
-        ).all()
-        
-        count = len(unknown_runs)
-        
-        # Delete these runs (cascade will handle suggestions and predictions)
-        for run in unknown_runs:
-            session.delete(run)
-        
-        session.commit()
-        return count
+    """Deprecated: kept for backward compatibility, returns 0 and performs no action."""
+    return 0
