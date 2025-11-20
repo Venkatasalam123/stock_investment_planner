@@ -279,44 +279,61 @@ engine: Engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
-def get_connection_info() -> dict[str, str]:
+def get_connection_info() -> Dict[str, str]:
     """Get connection information for UI display (safe - no passwords)."""
-    info: dict[str, str] = {}
+    info: Dict[str, str] = {}
     
     # Try to get from environment and Streamlit secrets
+    st_secrets = None
     try:
         import streamlit as st
-        try:
-            st_secrets = st.secrets.to_dict()
-        except Exception:
-            st_secrets = None
+        if hasattr(st, 'secrets'):
+            try:
+                st_secrets = st.secrets.to_dict()
+            except (AttributeError, RuntimeError, Exception):
+                st_secrets = None
     except (ImportError, RuntimeError):
         st_secrets = None
     
     # Get APP_ENV
     app_env = os.getenv("APP_ENV") or os.getenv("ENV") or ""
     if not app_env and st_secrets:
-        app_env = str(st_secrets.get("APP_ENV", ""))
+        try:
+            app_env = str(st_secrets.get("APP_ENV", "")).lower()
+        except (AttributeError, TypeError, Exception):
+            app_env = ""
     info["Environment"] = app_env if app_env else "Not set (defaults to LOCAL)"
     
-    # Get database type and URL
-    db_url = DATABASE_URL
-    if db_url.startswith("sqlite"):
-        info["Database Type"] = "SQLite (Local)"
-        info["Database Path"] = db_url.replace("sqlite:///", "")
-    elif "postgresql" in db_url.lower() or "postgres" in db_url.lower():
-        info["Database Type"] = "PostgreSQL (Neon/Cloud)"
-        info["Database URL"] = _mask_password_in_url(db_url)
-    else:
-        info["Database Type"] = "Unknown"
-        info["Database URL"] = _mask_password_in_url(db_url)
+    # Get database type and URL - handle errors gracefully
+    try:
+        db_url = DATABASE_URL
+        if db_url and db_url.startswith("sqlite"):
+            info["Database Type"] = "SQLite (Local)"
+            info["Database Path"] = db_url.replace("sqlite:///", "")
+        elif db_url and ("postgresql" in db_url.lower() or "postgres" in db_url.lower()):
+            info["Database Type"] = "PostgreSQL (Neon/Cloud)"
+            info["Database URL"] = _mask_password_in_url(db_url)
+        else:
+            info["Database Type"] = "Unknown"
+            if db_url:
+                info["Database URL"] = _mask_password_in_url(db_url)
+            else:
+                info["Database URL"] = "Not configured"
+    except Exception as e:
+        info["Database Type"] = "Error"
+        info["Database URL"] = f"Error: {str(e)}"
     
     # Source of configuration
     sources = []
-    if os.getenv("DATABASE_URL") or os.getenv("LOCAL_DATABASE_URL") or os.getenv("APP_ENV"):
-        sources.append("Environment Variables (.env)")
+    try:
+        if os.getenv("DATABASE_URL") or os.getenv("LOCAL_DATABASE_URL") or os.getenv("APP_ENV"):
+            sources.append("Environment Variables (.env)")
+    except Exception:
+        pass
+    
     if st_secrets:
         sources.append("Streamlit Secrets")
+    
     if not sources:
         sources.append("Default (SQLite)")
     info["Configuration Source"] = ", ".join(sources)

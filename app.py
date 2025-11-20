@@ -28,7 +28,6 @@ from services.core.nse import (
 from storage.database import (
     fetch_recent_runs,
     fetch_run_by_id,
-    get_connection_info,
     load_run_data,
     log_run,
     fetch_all_predictions,
@@ -1265,7 +1264,59 @@ def show_recent_runs() -> None:
     # Display connection information in an expander
     with st.expander("🔌 Database Connection Details", expanded=False):
         try:
-            conn_info = get_connection_info()
+            # Try to import get_connection_info, with fallback if not available
+            try:
+                from storage.database import get_connection_info
+                conn_info = get_connection_info()
+            except (ImportError, AttributeError) as import_err:
+                # Fallback: manually construct connection info
+                import os
+                conn_info = {}
+                try:
+                    import streamlit as st_module
+                    if hasattr(st_module, 'secrets'):
+                        try:
+                            st_secrets = st_module.secrets.to_dict()
+                            conn_info["Environment"] = str(st_secrets.get("APP_ENV", os.getenv("APP_ENV", "Not set")))
+                            conn_info["Configuration Source"] = "Streamlit Secrets"
+                        except Exception:
+                            conn_info["Environment"] = os.getenv("APP_ENV", "Not set")
+                            conn_info["Configuration Source"] = "Environment Variables"
+                    else:
+                        conn_info["Environment"] = os.getenv("APP_ENV", "Not set")
+                        conn_info["Configuration Source"] = "Environment Variables"
+                except Exception:
+                    conn_info["Environment"] = os.getenv("APP_ENV", "Not set")
+                    conn_info["Configuration Source"] = "Environment Variables"
+                
+                # Try to get DATABASE_URL
+                try:
+                    from storage.database import DATABASE_URL
+                    db_url = DATABASE_URL
+                except Exception:
+                    # If DATABASE_URL import also fails, try to get from env directly
+                    db_url = os.getenv("DATABASE_URL") or os.getenv("LOCAL_DATABASE_URL", "sqlite:///data/app.db")
+                if db_url and db_url.startswith("sqlite"):
+                    conn_info["Database Type"] = "SQLite (Local)"
+                    conn_info["Database Path"] = db_url.replace("sqlite:///", "")
+                elif db_url and ("postgresql" in db_url.lower() or "postgres" in db_url.lower()):
+                    conn_info["Database Type"] = "PostgreSQL (Neon/Cloud)"
+                    # Mask password
+                    if "@" in db_url:
+                        parts = db_url.split("@")
+                        if ":" in parts[0]:
+                            user_pass = parts[0].split(":")
+                            conn_info["Database URL"] = f"{user_pass[0]}:***@{parts[1]}"
+                        else:
+                            conn_info["Database URL"] = db_url
+                    else:
+                        conn_info["Database URL"] = db_url
+                else:
+                    conn_info["Database Type"] = "Unknown"
+                    conn_info["Database URL"] = "Not configured"
+            
+            # Test connection
+            from storage.database import test_db_connection
             conn_success, conn_msg = test_db_connection()
             
             if conn_success:
