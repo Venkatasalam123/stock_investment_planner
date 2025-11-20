@@ -28,6 +28,7 @@ from services.core.nse import (
 from storage.database import (
     fetch_recent_runs,
     fetch_run_by_id,
+    get_connection_info,
     load_run_data,
     log_run,
     fetch_all_predictions,
@@ -1261,6 +1262,31 @@ def show_run_details(run) -> None:
 
 
 def show_recent_runs() -> None:
+    # Display connection information in an expander
+    with st.expander("🔌 Database Connection Details", expanded=False):
+        try:
+            conn_info = get_connection_info()
+            conn_success, conn_msg = test_db_connection()
+            
+            if conn_success:
+                st.success(conn_msg)
+            else:
+                st.error(conn_msg)
+            
+            st.markdown("**Connection Configuration:**")
+            info_cols = st.columns(2)
+            with info_cols[0]:
+                st.markdown(f"**Environment:** {conn_info.get('Environment', 'N/A')}")
+                st.markdown(f"**Database Type:** {conn_info.get('Database Type', 'N/A')}")
+            with info_cols[1]:
+                if 'Database Path' in conn_info:
+                    st.markdown(f"**Database Path:** `{conn_info['Database Path']}`")
+                elif 'Database URL' in conn_info:
+                    st.markdown(f"**Database URL:** `{conn_info['Database URL']}`")
+                st.markdown(f"**Source:** {conn_info.get('Configuration Source', 'N/A')}")
+        except Exception as exc:
+            st.warning(f"Could not retrieve connection details: {exc}")
+    
     # Test and display database connection status
     conn_success, conn_msg = test_db_connection()
     if not conn_success:

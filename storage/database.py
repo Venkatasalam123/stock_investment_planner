@@ -25,6 +25,55 @@ from services.core.llm import LLMResult
 # Ensure .env is loaded even when this module is imported directly
 load_dotenv()
 
+def _mask_password_in_url(url: str) -> str:
+    """Mask password in URL for safe logging."""
+    if not url or url.startswith("sqlite"):
+        return url
+    
+    try:
+        parsed = urlparse(url)
+        if parsed.password:
+            masked = f"{parsed.scheme}://{parsed.username}:***@{parsed.hostname}"
+            if parsed.port:
+                masked += f":{parsed.port}"
+            masked += parsed.path
+            if parsed.query:
+                masked += f"?{parsed.query}"
+            return masked
+    except Exception:
+        pass
+    
+    return url
+
+
+def _print_safe_url(label: str, url: str) -> None:
+    """Print database URL with masked password."""
+    safe_url = _mask_password_in_url(url)
+    print(f"{label}: {safe_url}")
+
+
+def _debug_connection_info(app_env: str, local_url: str | None, st_secrets: dict | None) -> None:
+    """Print debug information about connection resolution."""
+    print("=" * 60)
+    print("🔍 DATABASE CONNECTION DEBUG")
+    print("=" * 60)
+    print(f"APP_ENV from os.getenv: {os.getenv('APP_ENV')}")
+    print(f"ENV from os.getenv: {os.getenv('ENV')}")
+    print(f"APP_ENV resolved: {app_env}")
+    print(f"LOCAL_DATABASE_URL from os.getenv: {os.getenv('LOCAL_DATABASE_URL')}")
+    print(f"DATABASE_URL from os.getenv: {'SET' if os.getenv('DATABASE_URL') else 'NOT SET'}")
+    
+    if st_secrets:
+        print(f"st.secrets available: YES")
+        print(f"APP_ENV from st.secrets: {st_secrets.get('APP_ENV', 'NOT SET')}")
+        print(f"LOCAL_DATABASE_URL from st.secrets: {'SET' if st_secrets.get('LOCAL_DATABASE_URL') else 'NOT SET'}")
+        print(f"DATABASE_URL from st.secrets: {'SET' if st_secrets.get('DATABASE_URL') else 'NOT SET'}")
+    else:
+        print(f"st.secrets available: NO (not in Streamlit context)")
+    
+    print("=" * 60)
+
+
 def _normalize_database_url(url: str) -> str:
     """Normalize database URL, ensuring password is properly encoded."""
     if not url or url.startswith("sqlite"):
@@ -59,23 +108,65 @@ def _resolve_database_url() -> str:
     - Cloud/production: DATABASE_URL (Neon/Postgres)
     
     Use APP_ENV (or ENV) to detect cloud deployments.
+    Also checks Streamlit secrets if available.
     """
+    # Try to import streamlit to check secrets (only in Streamlit context)
+    st_secrets = None
+    try:
+        import streamlit as st
+        try:
+            st_secrets = st.secrets.to_dict()
+        except Exception:
+            pass  # st.secrets not available (not in Streamlit context)
+    except ImportError:
+        pass  # streamlit not installed (shouldn't happen but safe)
+    
+    # Check environment variables and Streamlit secrets
     app_env = (os.getenv("APP_ENV") or os.getenv("ENV") or "").lower()
+    if not app_env and st_secrets:
+        app_env = str(st_secrets.get("APP_ENV", "")).lower()
+    
     local_url = os.getenv("LOCAL_DATABASE_URL")
+    if not local_url and st_secrets:
+        local_url = st_secrets.get("LOCAL_DATABASE_URL")
+    
     default_sqlite = "sqlite:///data/app.db"
+    
+    # Debug: Print connection info (masking password)
+    _debug_connection_info(app_env, local_url, st_secrets)
     
     if app_env in {"cloud", "prod", "production", "streamlit"}:
         cloud_url = os.getenv("DATABASE_URL")
+        if not cloud_url and st_secrets:
+            cloud_url = st_secrets.get("DATABASE_URL")
+        
         if not cloud_url:
-            raise RuntimeError("DATABASE_URL must be provided when APP_ENV is set to 'cloud'.")
-        return _normalize_database_url(cloud_url)
+            error_msg = f"DATABASE_URL must be provided when APP_ENV is '{app_env}'. "
+            error_msg += f"Checked os.getenv('DATABASE_URL') and st.secrets.get('DATABASE_URL')."
+            print(f"❌ DATABASE ERROR: {error_msg}")
+            raise RuntimeError(error_msg)
+        
+        normalized_url = _normalize_database_url(cloud_url)
+        _print_safe_url("✅ Using CLOUD database (Neon/Postgres)", normalized_url)
+        return normalized_url
     
     # Local/dev: prefer LOCAL_DATABASE_URL, else DATABASE_URL, else sqlite
     if local_url:
-        return _normalize_database_url(local_url)
+        normalized_url = _normalize_database_url(local_url)
+        _print_safe_url("✅ Using LOCAL_DATABASE_URL", normalized_url)
+        return normalized_url
     
-    fallback = os.getenv("DATABASE_URL", default_sqlite)
-    return _normalize_database_url(fallback)
+    fallback = os.getenv("DATABASE_URL")
+    if not fallback and st_secrets:
+        fallback = st_secrets.get("DATABASE_URL")
+    fallback = fallback or default_sqlite
+    
+    normalized_url = _normalize_database_url(fallback)
+    if fallback.startswith("sqlite"):
+        print(f"✅ Using SQLite database: {fallback}")
+    else:
+        _print_safe_url("✅ Using fallback DATABASE_URL", normalized_url)
+    return normalized_url
 
 
 DATABASE_URL = _resolve_database_url()
@@ -186,6 +277,51 @@ engine: Engine = create_engine(
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
 )
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def get_connection_info() -> dict[str, str]:
+    """Get connection information for UI display (safe - no passwords)."""
+    info: dict[str, str] = {}
+    
+    # Try to get from environment and Streamlit secrets
+    try:
+        import streamlit as st
+        try:
+            st_secrets = st.secrets.to_dict()
+        except Exception:
+            st_secrets = None
+    except (ImportError, RuntimeError):
+        st_secrets = None
+    
+    # Get APP_ENV
+    app_env = os.getenv("APP_ENV") or os.getenv("ENV") or ""
+    if not app_env and st_secrets:
+        app_env = str(st_secrets.get("APP_ENV", ""))
+    info["Environment"] = app_env if app_env else "Not set (defaults to LOCAL)"
+    
+    # Get database type and URL
+    db_url = DATABASE_URL
+    if db_url.startswith("sqlite"):
+        info["Database Type"] = "SQLite (Local)"
+        info["Database Path"] = db_url.replace("sqlite:///", "")
+    elif "postgresql" in db_url.lower() or "postgres" in db_url.lower():
+        info["Database Type"] = "PostgreSQL (Neon/Cloud)"
+        info["Database URL"] = _mask_password_in_url(db_url)
+    else:
+        info["Database Type"] = "Unknown"
+        info["Database URL"] = _mask_password_in_url(db_url)
+    
+    # Source of configuration
+    sources = []
+    if os.getenv("DATABASE_URL") or os.getenv("LOCAL_DATABASE_URL") or os.getenv("APP_ENV"):
+        sources.append("Environment Variables (.env)")
+    if st_secrets:
+        sources.append("Streamlit Secrets")
+    if not sources:
+        sources.append("Default (SQLite)")
+    info["Configuration Source"] = ", ".join(sources)
+    
+    return info
 
 
 def test_db_connection() -> tuple[bool, str]:
